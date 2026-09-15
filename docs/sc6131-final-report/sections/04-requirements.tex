@@ -1,0 +1,87 @@
+\section{Requirements and Threat Model}
+\label{sec:requirements}
+
+\subsection{Functional requirements}
+
+The requirements below were derived from the three problems in
+Section~\ref{sec:introduction} and refined against the codebase. Each is labelled so that
+the design (Section~\ref{sec:design}) and the evaluation (Section~\ref{sec:evaluation})
+can refer back to it.
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[FR1 --- Bounded context under flood.] The notification block injected into the
+        receiver's prompt must grow sub-linearly in the number of inbound messages from a
+        peer; repeated events of the same kind from the same peer must collapse into one
+        counted line.
+  \item[FR2 --- Escalations always visible.] A pending approval, a failed connection or a
+        paid priority message must be rendered regardless of how much chatter arrived
+        before it, and regardless of the rendering cap.
+  \item[FR3 --- Attention is measured.] The receiver must record, per peer and per day,
+        how many notification lines were rendered on its behalf, how many estimated tokens
+        those lines injected, how many escalations were surfaced and how many events were
+        suppressed past the cap. The record must be readable without starting the
+        transport.
+  \item[FR4 --- Prices are discoverable.] An agent must be able to publish attention prices
+        per tier in the same registration file that already publishes its endpoint, so that
+        a sender can learn the cost before sending, and preview it with a dry run.
+  \item[FR5 --- Enforcement is opt-in and machine-readable.] With enforcement enabled, an
+        inbound \code{message/send} from a sender that holds no active \code{message/send}
+        grant and carries no valid stamp must be rejected \emph{before} it reaches the
+        conversation log or the notification pipeline, with a JSON-RPC error whose
+        \code{data} carries the price list and, when applicable, the reason the stamp failed.
+        With enforcement disabled (the default) behaviour must be unchanged.
+  \item[FR6 --- Grants are free stamps.] A peer that holds a \code{message/send} grant is
+        never charged for standard delivery; the social trust encoded in a grant takes
+        precedence over the economic mechanism.
+  \item[FR7 --- Pay once, spend many.] A sender must be able to prepay a credit at a receiver
+        with one on-chain payment and then send many messages, each carrying a stamp that is
+        debited off-chain; no chain RPC may occur in the per-message path.
+  \item[FR8 --- Portable proof of credit.] The receiver must return a signed certificate
+        that binds the credit to the payment transaction, the two agent identities and the
+        amount, verifiable by the holder against the receiver's known agent address.
+  \item[FR9 --- Paid wake-ups.] A stamp whose value meets the receiver's published
+        \code{priority} price must cause the message to render as an escalation, with a
+        longer excerpt, and to wake the agent where the host supports it---including when
+        the sender is a grant holder.
+  \item[FR10 --- Metered free tier.] A \code{message/send} grant may carry a
+        \code{notificationsPerWeek} constraint. When the holder exceeds it, further ordinary
+        notifications in the window fold into one summary line; the messages themselves are
+        still delivered and logged. Escalations are never folded.
+  \item[FR11 --- Host parity.] Every mechanism must behave identically whether the host
+        is the CLI, \code{tapd}, the OpenClaw plugin or the Hermes plugin, because all of
+        them render the same drained batch.
+\end{description}
+
+\subsection{Non-functional requirements}
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[NFR1 --- Backward compatibility.] A peer running a pre-project TAP version must be
+        able to message and be messaged by a post-project peer. Stamps ride in message
+        metadata that older peers ignore; enforcement defaults to off.
+  \item[NFR2 --- Crash safety.] The ledgers are written by exactly one process (the
+        transport owner) using the repository's existing \code{tmp + rename} pattern, and
+        every wire interaction that moves money must be idempotent across a crash between
+        payment, debit, journal write and event emission.
+  \item[NFR3 --- Never lose a message.] Quota folding and coalescing may compress
+        \emph{notifications}; they must never discard a \emph{message}. Any enforcement path
+        that cannot answer (missing ledger, missing contact) must fail open.
+  \item[NFR4 --- No new trusted third party.] The design must not introduce a service that
+        both peers must trust in addition to the chain and XMTP.
+  \item[NFR5 --- Repository conventions.] ESM, named exports, Biome lint/format, strict
+        TypeScript with \code{noUnusedLocals}; every new CLI command documented in the
+        canonical skill file; both E2E suites updated for behavioural changes.
+\end{description}
+
+\subsection{Threat model}
+\label{sec:threat-model}
+
+The adversary is a \emph{connected} peer: an agent that has completed the invite handshake
+and is an active contact, but that may be buggy, over-eager or hostile. Unknown senders are
+already rejected by the transport and are out of scope. The adversary can send arbitrary
+\code{message/send} and \code{action/request} payloads at any rate, can replay its own
+earlier messages, can present arbitrary stamps and can claim arbitrary transaction
+hashes in a top-up. It cannot forge another agent's XMTP identity or OWS signatures. The
+assets to protect are the receiver's LLM context, the receiver's wake budget, the
+integrity of the postage ledger (no double spend, no minting) and the receiver's signing
+key (no signing amplification). Section~\ref{sec:security} maps each threat to a
+mitigation.

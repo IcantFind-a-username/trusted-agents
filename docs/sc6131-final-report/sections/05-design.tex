@@ -1,0 +1,435 @@
+\section{Design}
+\label{sec:design}
+
+This section is the core of the report. It first explains why the architecture proposed
+in the first progress journal was replaced (\S\ref{sec:design-pivot}), then states the
+design principles that the replacement follows (\S\ref{sec:design-principles}), and
+finally presents each mechanism with its rationale
+(\S\ref{sec:design-coalescing}--\S\ref{sec:design-priority}).
+
+\subsection{Where should the meter live?}
+\label{sec:design-pivot}
+
+\paragraph{The Journal-1 proposal.}
+The first progress journal framed the project as ``Postage: paid attention'' and proposed
+a standalone TypeScript service in the mould of Tack. A sender wishing to reach a receiver
+would call the service, receive an x402 \code{402 Payment Required} with a price, pay in
+USDC on Taiko Alethia, and retry; the service would then relay or release the message.
+The proposal had real merits: it reused a payment flow the partner already operated, it
+put Taiko in the per-message path, and it could be built without modifying TAP.
+
+\paragraph{Why it was set aside.}
+Working through the design against the codebase exposed four objections, any one of
+which would have been sufficient.
+
+\begin{enumerate}
+  \item \textbf{It meters the wrong resource in the wrong place.} Tack prices bytes stored
+        at Tack. The resource this project is about is the \emph{receiver's} LLM attention,
+        and only the receiver's daemon knows what a message actually cost: whether it was
+        rendered at all, into how many lines, whether it coalesced with earlier lines, whether
+        it triggered a wake-up, whether it was suppressed past the cap. A service in front
+        of the receiver can count messages or bytes; it cannot count attention. Pricing
+        attention from outside the receiver would be pricing a proxy.
+  \item \textbf{It duplicates a trust layer TAP already has.} TAP admits a sender only
+        after an ERC-8004 identity has been resolved and a signed invite exchanged, and it
+        already records per-peer grants. A standalone service would need its own account
+        model, its own authentication of both parties and its own mapping from payer to
+        recipient, all of which would have to be kept consistent with the trust store inside
+        each daemon. It would also be a new party that both peers must trust with
+        message-flow metadata, contradicting TAP's local-first design and NFR4.
+  \item \textbf{It puts chain settlement in the hot path.} A per-message x402 payment means a
+        transaction, or at least a facilitator round-trip, per message. The upstream TAP
+        maintainers' research note for the messaging layer states the opposite requirement: ``Relays only
+        need to verify the proof and decrement balance. No chain RPC is needed in the hot
+        path''~\cite{tap-research-note}. The economically sound shape is one payment
+        converted into many cheap spends.
+  \item \textbf{It cannot compose with grants.} A friend who has been granted
+        \code{message/send} should never pay; a stranger should. Only the receiver knows who
+        holds a grant. Enforcing payment outside the receiver would either charge friends or
+        require the receiver to publish its grant table to the service.
+\end{enumerate}
+
+\paragraph{The decision.}
+Postage was therefore built \emph{into} TAP, at the receiver, as an extension of the
+daemon that already renders notifications. Figure~\ref{fig:pivot} contrasts the two
+shapes. What was kept from the x402 model is its most useful idea: an unpaid request is
+answered not with silence but with a machine-readable quote. In the implemented system
+that quote travels as JSON-RPC error \code{-32050} (\code{ATTENTION\_PAYMENT\_REQUIRED})
+over XMTP, and the CLI and daemon surface it to local callers as HTTP \code{402}. What was
+kept from the partner relationship is the settlement leg: a postage top-up is an on-chain
+USDC payment to the receiver's agent address on whichever CAIP-2 chain the receiver
+registered on, so an agent registered on Taiko is paid on Taiko. This was a decision taken
+with the project's full time budget in hand; it made the resulting system smaller, not
+larger, but the reason for it is correctness, not scope.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, minimum height=9mm, minimum width=26mm, align=center, inner sep=3pt},
+  ext/.style={box, fill=red!8, draw=red!60!black},
+  tap/.style={box, fill=blue!6, draw=blue!50!black},
+  chain/.style={box, fill=green!8, draw=green!50!black},
+  arr/.style={-{Stealth[length=2mm]}, thick},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt},
+]
+% ---------------- (a) Journal-1 plan ----------------
+\node[font=\bfseries\small, anchor=west] at (-6.4,1.9) {(a) Journal-1 plan: standalone x402 service between the peers};
+\node[tap] (s1) at (-4.6,0.6) {Sender\\daemon};
+\node[ext] (svc) at (0,0.6) {Tack-like\\x402 service};
+\node[tap] (r1) at (4.6,0.6) {Receiver\\daemon};
+\node[chain] (c1) at (0,-1.6) {Taiko Alethia\\(USDC)};
+\draw[arr] (s1) -- node[lbl,above]{send} (svc);
+\draw[arr] (svc) -- node[lbl,above]{release} (r1);
+\draw[arr,dashed] (svc) -- node[lbl,right]{402 quote / verify, per message} (c1);
+\draw[arr,dashed] (s1.south) |- node[lbl,below,pos=0.75]{pay per message} (c1.west);
+\node[font=\scriptsize, align=left, anchor=west, text width=52mm] at (1.6,-1.6)
+  {Meter counts messages or bytes at a third party; grants are invisible to it; one settlement per message.};
+% ---------------- (b) Implemented ----------------
+\begin{scope}[yshift=-5.6cm]
+\node[font=\bfseries\small, anchor=west] at (-6.4,1.9) {(b) Implemented: TAP-native postage at the receiver};
+\node[tap] (s2) at (-4.6,0.6) {Sender\\daemon};
+\node[tap, minimum width=46mm] (r2) at (2.0,0.6) {Receiver daemon\\\scriptsize gate $\to$ ledger $\to$ render};
+\node[chain] (c2) at (-1.2,-1.6) {Receiver's chain\\(Base or Taiko)};
+\draw[arr] ([yshift=2mm]s2.east) -- node[lbl,above]{stamped \code{message/send}} ([yshift=2mm]r2.west);
+\draw[arr,dashed] ([yshift=-2mm]r2.west) -- node[lbl,below]{\code{-32050} quote} ([yshift=-2mm]s2.east);
+\draw[arr,dashed] (s2.south) |- node[lbl,below,pos=0.75]{top-up once} (c2.west);
+\node[font=\scriptsize, align=left, anchor=west, text width=52mm] at (1.6,-1.6)
+  {Meter counts rendered lines and tokens at the receiver; grants are free stamps; one settlement per credit.};
+\end{scope}
+\end{tikzpicture}
+\caption{Placement of the attention meter. (a)~The first progress journal proposed a
+standalone x402 service between the peers. (b)~The implemented design places metering,
+pricing and postage inside the receiver's daemon, where attention is actually spent and
+where identity and grants already live; the chain is touched once per credit, not once per
+message.}
+\label{fig:pivot}
+\end{figure}
+
+\subsection{Design principles}
+\label{sec:design-principles}
+
+The principles below were written down before the implementation began and were used to
+settle the many smaller decisions that follow. Each is stated with the requirement it
+serves.
+
+\begin{enumerate}[label=P\arabic*.]
+  \item \textbf{Meter where the cost lands.} Attention is accounted at the moment a line is
+        rendered into a host context, from the same render plan the host uses, so the ledger
+        can never disagree with what the agent saw (FR3, FR11).
+  \item \textbf{Compress before you charge.} Coalescing and escalation-first rendering come
+        first, because they eliminate most of the waste at no cost to anyone and because
+        pricing without a unit of measurement is guesswork. Only after the ledger exists is
+        it meaningful to publish a price (FR1--FR4).
+  \item \textbf{Escalations outrank everything.} No mechanism---cap, coalescing, quota---may
+        hide an escalation. Paid priority stamps and pending approvals are always rendered
+        and never folded (FR2, FR9, FR10).
+  \item \textbf{Never lose a message; fail open.} Metering may fold notifications into
+        summaries; it may not drop messages. If a quota or ledger lookup fails, the batch
+        passes through unmetered (NFR3).
+  \item \textbf{Social trust precedes economic trust.} A grant is a free stamp. Postage
+        exists for un-granted peers, and for granted peers who want more than the grant
+        gives (a wake-up, or lines beyond the quota) (FR6, FR9, FR10).
+  \item \textbf{Pay once, spend many.} One on-chain payment opens a credit; stamps are
+        debited off-chain under a local mutex. Nothing in the per-message path touches the
+        chain (FR7).
+  \item \textbf{Opt in, and be machine-readable when you say no.} Enforcement is off by
+        default; when it rejects, the rejection carries everything the sender needs to fix
+        the situation without a human reading logs (FR5, NFR1).
+  \item \textbf{Idempotent under crash and redelivery.} Every step that moves value or
+        state is keyed so that a retry after a crash converges rather than double-charges
+        (NFR2).
+\end{enumerate}
+
+\subsection{Pipeline overview}
+
+Figure~\ref{fig:pipeline} shows where each mechanism sits in the inbound path. The gate
+(\S\ref{sec:design-pricing}, \S\ref{sec:design-postage}) runs before anything is logged;
+coalescing (\S\ref{sec:design-coalescing}) runs at enqueue; quota folding
+(\S\ref{sec:design-priority}), accounting (\S\ref{sec:design-ledger}) and the
+escalation-first render plan (\S\ref{sec:design-coalescing}) run at drain, inside the
+daemon, so that every host receives the same batch.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  node distance=7mm and 16mm,
+  stage/.style={draw, rounded corners=2pt, minimum height=10mm, minimum width=27mm, align=center, inner sep=3pt, fill=blue!5, draw=blue!50!black},
+  new/.style={stage, fill=orange!12, draw=orange!70!black},
+  arr/.style={-{Stealth[length=2mm]}, thick},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt},
+]
+\node[stage] (xmtp) {XMTP\\transport};
+\node[new, right=of xmtp, minimum width=34mm] (gate) {Attention gate\\\scriptsize grant? stamp? else \code{-32050}};
+\node[stage, right=of gate] (log) {Conversation\\log + journal};
+\node[stage, right=of log] (evt) {Typed event\\\scriptsize \code{message.received}};
+\node[new, below=16mm of evt] (cls) {Classifier\\\scriptsize priority $\Rightarrow$ escalation};
+\node[new, left=of cls] (q) {Coalescing\\queue\\\scriptsize merge by key};
+\node[new, left=of q, minimum width=34mm] (drain) {Drain\\\scriptsize quota fold $\to$ account};
+\node[new, left=of drain] (plan) {Render plan\\\scriptsize escalations first, cap 20};
+\node[stage, below=14mm of plan, xshift=-8mm, minimum width=48mm] (host) {Host prompt\\\scriptsize OpenClaw / Hermes: \code{[TAP Notifications]}};
+\node[new, below=14mm of drain, xshift=10mm, minimum width=34mm] (ledger) {Attention ledger\\\scriptsize per peer, per UTC day};
+\draw[arr] (xmtp) -- (gate);
+\draw[arr] (gate) -- node[lbl,above]{free or paid} (log);
+\draw[arr] (log) -- (evt);
+\draw[arr] (evt) -- (cls);
+\draw[arr] (cls) -- (q);
+\draw[arr] (q) -- (drain);
+\draw[arr] (drain) -- (plan);
+\draw[arr] (plan.south) -- (host.north -| plan.south);
+\draw[arr] (drain.south) -- (ledger.north -| drain.south);
+\draw[arr, dashed, red!70!black] (gate.south) -- ++(0,-0.75) node[lbl, below, text=red!70!black]{rejected: not logged, not rendered, not billed};
+\end{tikzpicture}%
+}
+\caption{Inbound path in the receiving daemon. Orange stages were added by this project.
+A rejected message never reaches the log, the queue or the ledger. Everything from the
+queue to the render plan runs inside \code{tapd}, so the CLI, OpenClaw and Hermes render
+one canonical batch.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Notification coalescing and escalation-first rendering}
+\label{sec:design-coalescing}
+
+\paragraph{Problem restated.}
+The legacy queue appended one notification per event and the renderer emitted the first
+twenty in arrival order. Fifty chat messages from three peers followed by one transfer
+request produced twenty interleaved chat lines and a footer ``31 more TAP notifications
+omitted''---with the approval request inside the 31.
+
+\paragraph{Coalescing at enqueue.}
+Each notification may carry a \code{coalesceKey} and a \code{coalesceStrategy}. When a
+new notification arrives whose key is already buffered, it is merged \emph{in place}: the
+entry keeps its buffer slot and identifier, its content becomes the newest event's
+content, and, under the default \code{count} strategy, a \code{count} accumulates. The
+alternative \code{replace} strategy swaps content without counting; it is used for state
+transitions such as an action going from pending to completed, which is one thing changing
+rather than many things repeating. Chat from one connection is keyed
+\code{msg:<connectionId>}, so a flood from Alice becomes a single line
+``\code{New message from Alice: \ldots (x334)}''. The design choice to keep the
+\emph{first-arrival} slot but the \emph{newest} content is deliberate: the slot preserves
+fairness of ordering across peers, while the content shows the operator the most recent
+state of the conversation.
+
+Coalescing happens at enqueue rather than at drain for two reasons. First, the queue is
+bounded (1{,}000 entries, oldest dropped) as a safety measure against a host that never
+drains; merging at enqueue means a flood from one peer occupies one slot and cannot evict
+other peers' notifications. Second, a per-key index kept in step with the buffer makes
+the merge $O(1)$; the index is cleared on drain and pruned on eviction so that a stale
+mapping can never merge new events into an entry that is no longer buffered.
+
+\paragraph{Escalation-first render plan.}
+Rendering was refactored into a pure function that returns a \emph{plan}
+(\code{planNotificationRender}): the lines that will be rendered, the entries omitted
+past the cap, and a footer. The plan drops empty one-liners, then stable-partitions escalations ahead of all
+other types (preserving arrival order within each class), caps at twenty, and summarises
+the omitted tail \emph{grouped by peer and type with event counts}
+(``\code{omitted: 334 messages from Alice, 2 auto-replies}'') rather than as an opaque
+number. Because the plan is a value rather than a side effect, the OpenClaw host renders
+exactly it, the Hermes Python plugin mirrors it, and the accounting step
+(\S\ref{sec:design-ledger}) bills from it. This single-source-of-truth property is what
+satisfies FR11.
+
+\paragraph{Priority messages are never coalesced.}
+A message whose stamp paid the priority tier (\S\ref{sec:design-priority}) is classified
+as an escalation with a 400-character excerpt instead of 80 and carries no coalesce key.
+A paid wake-up must remain individually visible; collapsing two of them into one line
+would silently refund nothing and hide one.
+
+\subsection{The attention ledger}
+\label{sec:design-ledger}
+
+The ledger answers one question: \emph{what has each peer cost me?} It is a file
+(\path{<dataDir>/attention-ledger.json}) of UTC-day buckets, each holding per-peer
+statistics and a total. The unit of account is defined by the render plan: for every
+rendered line the ledger adds one to \code{notificationsRendered} and
+$\lceil \text{chars}/4 \rceil$ to \code{tokensInjected}; escalations increment
+\code{escalations}; omitted entries add their event counts to
+\code{overflowSuppressed}. Peers are keyed \code{<chain>\#<agentId>}, the same key the
+postage ledger uses so the two can be joined; block overhead and events with no peer (a
+pending-action escalation, for instance) are booked to an \code{unattributed} row.
+
+Three properties are intentional. The ledger records \emph{rendered} lines, not received
+messages, so a peer whose flood coalesced into one line is billed one line---the ledger
+measures attention actually spent, which is what P1 demands and what makes quota
+enforcement (\S\ref{sec:design-priority}) fair. Retention is thirty days with pruning on
+write, so the file is bounded. And the ledger is written only by the transport-owning
+daemon, under a process-local mutex and the repository's atomic \code{tmp + rename}
+pattern, so it inherits the single-writer discipline TAP already imposes on the trust
+store. \code{tap attention show} is a pure local read and starts no transport, in keeping
+with the ``fat CLI'' rule.
+
+\subsection{Attention pricing and the \code{-32050} quote}
+\label{sec:design-pricing}
+
+\paragraph{Publishing prices.}
+An agent's price list lives in \code{config.yaml} under \code{attention.pricing} and is
+copied into the registration file as \code{trustedAgentProtocol.attention} on the next
+\code{tap register update}, with a \code{version}, a \code{currency} (USDC), an optional
+CAIP-2 \code{chain}~\cite{caip2} and a map of tiers to decimal amounts. Three tiers are defined:
+\code{grantHolder} (documentary---grant holders are free by construction),
+\code{standard} (the price a stamp must cover to buy delivery) and \code{priority} (the
+price that additionally buys a wake-up). Putting prices in the registration file rather
+than inventing a new discovery message reuses the existing, cached
+(\raisebox{0.3ex}{\textasciitilde}24\,h) resolution path: a sender learns a peer's prices
+with \code{tap identity resolve}, and \code{tap message send --dry-run} previews the cost
+and whether a stamp would be attached.
+
+\paragraph{The gate.}
+With \code{attention.enforce: true}, an inbound \code{message/send} passes through a gate
+before the conversation log. If the sender holds an active \code{message/send} grant,
+the message is free (FR6). Otherwise the gate looks for a stamp
+(\S\ref{sec:design-postage}); if none is present, or the stamp does not cover the
+\code{standard} price, the message is rejected with
+\code{AttentionPaymentRequiredError}, which the transport maps to JSON-RPC
+\code{-32050} with \code{error.data.attention} holding the quote and
+\code{error.data.postage} holding a reason from the closed set
+\{\code{missing\_stamp}, \code{unpriced}, \code{unknown\_credit},
+\code{seq\_replayed}, \code{below\_price}, \code{insufficient\_credit}\}. The reason set
+was chosen so that a sender can decide mechanically whether a top-up would help
+(\code{insufficient\_credit}, \code{unknown\_credit}) or whether the stamp itself is wrong.
+
+Two details carry the compatibility requirement. First, if enforcement is on but no
+\code{standard} price is published, the gate degrades to ``granted peers only'' rather
+than accepting any stamp: an unpriced receiver cannot be bought. Second, the rejection
+marks the request journal entry \emph{completed} before throwing, so a later full-history
+sync replays the duplicate short-circuit instead of re-running enforcement per replay.
+
+\subsection{Prepaid postage}
+\label{sec:design-postage}
+
+Postage is the two-step model from the research note~\cite{tap-research-note}
+instantiated between two peers with no facilitator. Figure~\ref{fig:postage} shows the
+lifecycle.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  arr/.style={-{Stealth[length=2mm]}, thick},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt, align=center},
+]
+\def\L{0}\def\C{4.6}\def\R{9.2}
+\node[font=\bfseries] (sT) at (\L,0) {Sender A};
+\node[font=\bfseries] (cT) at (\C,0) {Chain};
+\node[font=\bfseries] (rT) at (\R,0) {Receiver B};
+\draw[thick, gray] (\L,-0.3) -- (\L,-8.2);
+\draw[thick, gray] (\C,-0.3) -- (\C,-8.2);
+\draw[thick, gray] (\R,-0.3) -- (\R,-8.2);
+% 1 pay
+\draw[arr] (\L,-0.8) -- node[lbl,above]{1. USDC transfer to B's agent address (\code{txHash})} (\C,-0.8);
+% 2 record held
+\node[lbl, anchor=west, draw=gray, rounded corners=1pt] at (\L+0.15,-1.45) {2. record \emph{held} credit \{creditId, txHash\} before any transport};
+% 3 topup request
+\draw[arr] (\L,-2.2) -- node[lbl,above]{3. \code{action/request postage/topup} \{creditId, amount, chain, txHash\}} (\R,-2.2);
+% 4 verify + record issued + sign
+\node[lbl, anchor=east, draw=gray, rounded corners=1pt, text width=44mm] at (\R-0.15,-3.15)
+  {4. verify payment (host hook); record \emph{issued} credit under mutex: one credit per txHash, $\le$16 live credits per peer; then sign certificate via OWS};
+% 5 result
+\draw[arr] (\R,-4.1) -- node[lbl,above]{5. \code{action/result} \{status: accepted, certificate\}} (\L,-4.1);
+\node[lbl, anchor=west, draw=gray, rounded corners=1pt] at (\L+0.15,-4.7) {6. verify certificate against B's known agent address; mark held credit verified};
+% 7 stamped sends
+\draw[arr] (\L,-5.5) -- node[lbl,above]{7. \code{message/send} + stamp \{creditId, seq=1, cost=0.001\}} (\R,-5.5);
+\node[lbl, anchor=east, draw=gray, rounded corners=1pt] at (\R-0.15,-6.05) {debit: seq $>$ lastSeq, cost $\ge$ standard, remaining $\ge$ cost};
+\draw[arr] (\L,-6.7) -- node[lbl,above]{8. \code{message/send} + stamp \{seq=2\}} (\R,-6.7);
+\draw[arr] (\L,-7.5) -- node[lbl,above]{9. stamp \{seq=3\}} (\R,-7.5);
+\draw[arr, red!70!black] (\R,-7.95) -- node[lbl,below]{\code{-32050}, postage.reason = \code{insufficient\_credit}, remaining = 0} (\L,-7.95);
+\end{tikzpicture}
+\caption{Postage lifecycle between two connected agents. One on-chain payment (1) opens a
+credit; all later steps are off-chain. Steps 7--9 correspond to the teammate's Experiment~2
+(Section~\ref{sec:eval-postage}).}
+\label{fig:postage}
+\end{figure}
+
+\paragraph{Top-up as a TAP action.}
+A top-up is an ordinary \code{action/request} of type \code{postage/topup}, handled by a
+TAP app. This was the natural fit: the app registry, the request journal, the
+result-waiter machinery and the conversation log all apply without special cases, and the
+same handlers ship both as a built-in of \code{core} and as the standalone package
+\code{@trustedagents/app-postage} for hosts that assemble their own app set. The handler
+receives its capabilities through a narrow, host-injected extension
+(\code{ctx.extensions.postage}: \code{recordIssued}, \code{issuedFor},
+\code{signCredit}, \code{verifyTopup}) rather than through the generic app storage,
+precisely so that top-ups and stamp debits are serialised by \emph{one} ledger mutex.
+
+\paragraph{Pay first, then ask.}
+The sender pays before it sends the top-up request, and records the \emph{held} credit
+locally before any transport action. The ordering is chosen for recoverability: the
+payment is irreversible, so whatever fails afterwards, the sender's ledger holds the
+\code{creditId}/\code{txHash} pair needed to retry, and the receiver's handler is
+idempotent per \code{creditId}---a retry after a timeout returns the original
+certificate and never opens a second credit. A definitive rejection by the peer removes
+the held record so that it cannot feed auto-stamping.
+
+\paragraph{The credit certificate.}
+On acceptance the receiver signs, through its OWS signing provider, an EIP-191 personal
+signature~\cite{eip191} over the keccak digest of the ABI-encoded facts
+\code{(creditId, issuerChain, issuerAgentId, holderAgentId, amountMicros, txHash)}. The
+holder verifies it against the issuer's agent address already recorded in its contact
+entry---the same scheme and the same trust anchor that invites use. The certificate is the
+holder's portable proof that the credit exists and is bound to a specific payment; it is
+not needed on the per-message path.
+
+\paragraph{Stamps and the debit rule.}
+Once a verified held credit exists, \code{sendMessage} attaches a stamp
+\code{\{creditId, seq, cost\}} to the \code{trustedAgent} metadata of every
+\code{message/send} to that peer automatically, drawing on the oldest credit whose
+remaining balance covers the cost, and persists the incremented \code{seq} and spend
+\emph{before} the stamp is returned---so a crash wastes one sequence value rather than
+reusing one. On the receiving side a debit succeeds only if the credit exists and belongs
+to this peer, \code{cost} is well-formed and at least the \code{standard} price,
+\code{seq} is strictly greater than the credit's \code{lastSeq}, and the remaining balance
+covers \code{cost}. The whole check-and-spend runs under the ledger mutex. The strictly
+increasing sequence is the replay defence: a captured stamp cannot be presented twice,
+and there is no nonce set to store or expire. The one exception is deliberate: a stamp
+with \code{seq == lastSeq} \emph{and} the same delivery key as the last debit is accepted
+without charge, because it is the crash-window redelivery of the message that already
+paid.
+
+\paragraph{Why stamps live in \code{message/send} metadata.}
+Carrying the stamp inside the existing message rather than as a separate action keeps the
+per-message path to one wire message, and lets a pre-project receiver ignore it: metadata
+it does not understand is simply not read (NFR1).
+
+\subsection{Priority stamps and notification quotas}
+\label{sec:design-priority}
+
+The final mechanism separates the two prices identified in
+Section~\ref{sec:background}---context and wake-ups---and gives grant holders a metered
+free tier.
+
+\paragraph{Priority buys the wake-up, the grant buys delivery.}
+A stamp whose \code{cost} meets the receiver's published \code{priority} price is booked
+at tier \code{priority}. The classifier then emits an \emph{escalation} with a
+400-character excerpt, the queue never coalesces it, the render plan places it first,
+and OpenClaw's escalation watcher calls \code{requestHeartbeatNow()} so the agent wakes
+immediately (Hermes shows it on the next turn). Critically, this applies to grant holders
+too: the gate exempts a grant holder from paying for delivery, but a priority-value stamp
+from a grant holder is still debited and still buys the wake-up
+(\code{chargeOptionalPriorityStamp}). The grant encodes ``I will read what you send'';
+the priority stamp encodes ``interrupt me now''---these are different permissions and are
+priced separately. Any failure in the optional priority path degrades silently to plain
+grant delivery: a grant holder is never rejected over a malformed stamp.
+
+\paragraph{The weekly quota.}
+A \code{message/send} grant may carry the constraint \code{notificationsPerWeek: N}. At
+drain time, before accounting and before any host renders, the daemon groups the batch's
+\code{info} notifications by peer, asks the attention ledger how many lines that peer had
+rendered in the trailing seven UTC days, and---if the peer is at or over quota---replaces
+the peer's info notifications with one \code{summary} line
+(``\code{12 notifications from Alice folded --- weekly notification quota reached
+(20/week)}'') whose \code{count} preserves the number of underlying events. The messages
+are still delivered and still in the conversation log; only their per-line claim on
+attention is withdrawn. Escalations are excluded from folding by construction (P3). When
+several active grants disagree, the most permissive wins, because all of them were issued
+by this same agent. If the trust store or ledger cannot answer, the batch passes through
+unfolded (P4).
+
+Quota enforcement is placed in the drain rather than in the renderer for the same reason
+accounting is: it must happen once, in the daemon, so that OpenClaw, Hermes and the
+ledger all see the same folded batch. It counts \emph{rendered} lines rather than
+received messages so that a peer whose chatter already coalesced is not penalised twice.
+Together the two mechanisms make the grant's free tier finite and let the peer buy past it
+with postage---which is exactly the relationship P5 asks for.

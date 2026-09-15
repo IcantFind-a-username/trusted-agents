@@ -1,0 +1,113 @@
+\section{Project Management and Division of Work}
+\label{sec:project-management}
+
+\subsection{Team and roles}
+
+The project was carried out by two MSBT students with Taiko as industry partner. The
+roles were separated by artefact rather than by phase, so that each member's contribution
+is identifiable in the repository history.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Division of work.}
+\label{tab:roles}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Member} & \textbf{Responsibility} & \textbf{Artefacts} \\
+\midrule
+Yiqun Xu (author) &
+Architecture decision to build postage inside TAP; design of all five mechanisms; the
+entire implementation, its unit, service and mock-E2E tests; skill and reference
+documentation; pull request~\#1; integration of the teammate's evaluation (review and
+merge of pull request~\#2). &
+25 commits on \path{feat/phase1-notification-coalescing}: 23 implementation commits (\code{1f5f30a}\ldots\code{cee9e0d}; 91 files, $\approx$8{,}200 lines added), one documentation commit (\code{50980f4}) and the merge of pull request~\#2; the \code{@trustedagents/app-postage} package. \\
+\addlinespace
+Zhang Hanyu (teammate) &
+Earlier design exploration (the ``Heed'' track) that preceded the TAP-native decision;
+design and execution of the evaluation; documentation of methodology, results and
+limitations. &
+\path{scripts/benchmark-attention.ts}, \path{scripts/benchmark-postage.ts},
+\path{evaluation/results.md}; pull request~\#2 (commit \code{0d123a1}, merged as
+\code{0330091}). \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This is an individual report: the design rationale, implementation account and
+interpretation are the author's; the measurements in Section~\ref{sec:evaluation} are
+the teammate's and are reproduced unchanged.
+
+\subsection{Timeline}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Project timeline as evidenced by the repository.}
+\label{tab:timeline}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{When} & \textbf{Milestone} \\
+\midrule
+Mar--Apr 2026 & Upstream TAP reaches \code{0.2.0-beta.7}: ERC-8004 identity, XMTP transport, grants, \code{tapd} daemon, OpenClaw and Hermes hosts. The upstream maintainers' research note on the messaging layer (23~March) recommends a two-step credit model for anti-spam. Branch point for this work is \code{e52bb66} (21~April). \\
+Progress Journal 1 & Project framed as ``Postage: paid attention''; tentative plan is a standalone Tack-like TypeScript service with x402 on Taiko Alethia. \\
+May--Aug 2026 & Design work; decision to build the layer inside TAP at the receiver (\S\ref{sec:design-pivot}); implementation and testing of increments 1--5. \\
+27--28 Aug 2026 & Increments 1--5 landed on the branch (23 commits). Pull request~\#1 opened against \code{main}. \\
+Late Aug 2026 & Industry mentor becomes unreachable (see below). \\
+14 Sep 2026 & README, \code{Agents.md} and skill files aligned with the attention/postage features. \\
+15 Sep 2026 & Teammate's evaluation merged into the branch (pull request~\#2). \\
+18 Oct 2026 & Final report due. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Working method}
+
+Work was organised as small, independently green commits in dependency order, each
+accompanied by its tests and, where a command or flag changed, by the corresponding
+update to the canonical skill file. This mirrored the upstream project's own conventions
+(Biome lint and format, strict TypeScript, both E2E suites updated for behavioural change)
+and meant that at no point did the branch contain a mechanism without its measurement
+hook or its documentation. Design principles (\S\ref{sec:design-principles}) were written
+before code and used to settle disagreements with the codebase as they arose; the two
+most consequential---``escalations outrank everything'' and ``never lose a message; fail
+open''---each vetoed a simpler implementation (a plain cap-and-drop quota) in favour of the
+folding design that shipped.
+
+One documentation-alignment commit (\code{50980f4}) was produced with an AI coding
+assistant under the author's direction and review; all design decisions and all
+production code are the author's own work.
+
+\subsection{Partner engagement and mentor availability}
+
+Taiko's involvement shaped the problem statement: paid interaction between agents,
+building on the Tack and x402 integration that already existed in TAP. The credit model
+the postage design follows comes from the upstream TAP maintainers' research note, not
+from the partner. The industry mentor, Daniel Wang, has been unreachable since late
+August~2026. As a consequence:
+
+\begin{itemize}
+  \item the decision to replace the Journal-1 architecture with the TAP-native design was
+        taken by the team and has \emph{not} been reviewed or endorsed by the partner;
+  \item the final artefact carries no mentor sign-off, and this report does not claim one;
+  \item the report attributes no position to the partner beyond the problem statement, and
+        otherwise presents the team's own reasoning.
+\end{itemize}
+
+The author regards this as a material gap in the project's validation rather than a
+formality, and has recorded the open questions that would have been put to the mentor in
+Section~\ref{sec:future-work}.
+
+\subsection{Risks and how they were handled}
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[Breaking existing users.] Mitigated by making every mechanism opt-in
+        (\code{attention.enforce} off by default), carrying stamps in ignorable metadata,
+        and leaving the live E2E suite's assertions unchanged.
+  \item[Money-moving code with crash windows.] Mitigated by the ordering rules of
+        \S\ref{sec:implementation} (pay first, record before transport, complete journal
+        after log) and by idempotency tests for each window.
+  \item[Platform dependency in evaluation.] The OWS native module's absence on Windows
+        blocked Experiment~3. The teammate documented the block rather than substituting a
+        weaker measurement; the mechanism's coverage rests on CI tests instead.
+  \item[Loss of mentor contact.] Not mitigable within the team; handled by transparency
+        in this report and in the pull request description.
+\end{description}

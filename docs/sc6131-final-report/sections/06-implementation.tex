@@ -1,0 +1,263 @@
+\section{Implementation}
+\label{sec:implementation}
+
+All implementation work described in this section is the author's. It lives on the branch
+\path{feat/phase1-notification-coalescing} of the project repository and is submitted as
+pull request~\#1~\cite{tap-pr1}. Relative to the branch point (\code{e52bb66}, the
+upstream \code{0.2.0-beta.7} release), the implementation commits touch 91~files with
+approximately 8{,}200 lines added and 140 removed, of which roughly 3{,}200 lines are
+production source, 4{,}300 lines are tests, and the remainder is documentation.
+
+\subsection{Increments}
+
+The work was landed as five increments, each of which left the repository lint-clean,
+type-clean and green under \code{bun run test}, in the dependency order that principle~P2
+prescribes. Table~\ref{tab:increments} summarises them; the full commit list is in
+Appendix~\ref{app:commits}.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Implementation increments, in landing order.}
+\label{tab:increments}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Increment} & \textbf{Scope} & \textbf{Principal modules} \\
+\midrule
+1. Coalescing &
+Coalesce at enqueue; escalation-first render plan with grouped overflow summary; flood demo script; skill documentation of the new block semantics. &
+\path{tapd/notification-queue.ts}, \path{tapd/notification-format.ts}, \path{scripts/demo-notification-flood.ts} \\
+2. Ledger &
+File-backed per-peer attention ledger; accounting on drain derived from the canonical render plan; \code{tap attention show}. &
+\path{core/attention/ledger.ts}, \code{tapd/daemon.ts}, \path{cli/commands/attention-show.ts} \\
+3. Pricing &
+\code{attention} block in config and registration file (validated on both sides); price discovery in \code{identity resolve}; \code{--dry-run} cost preview; \code{-32050} rejection of un-granted \code{message/send}. &
+\code{core/config/*}, \path{core/identity/registration-file.ts}, \path{core/common/errors.ts}, \path{core/runtime/service.ts}, \path{core/transport/xmtp.ts} \\
+4. Postage &
+Credit ledger (issued/held), stamps, credit certificates; \code{postage/topup} and \code{postage/balance} handlers; auto-stamping in \code{sendMessage}; top-up orchestration; \code{tap postage topup/balance}; \code{@trustedagents/app-postage}; \code{tapd} routes. &
+\code{core/postage/*}, \code{app-postage/}, \path{cli/commands/postage-*.ts}, \path{tapd/http/routes/postage.ts} \\
+5. Priority \& quota &
+Priority tier on stamps; escalation classification with 400-char excerpt; wake-up in OpenClaw; \code{notificationsPerWeek} folding at drain; \code{--priority} threaded through CLI, \code{tapd}, OpenClaw tool and Hermes plugin. &
+\path{tapd/notification-quota.ts}, \path{tapd/notification-classifier.ts}, \path{openclaw-plugin/escalation-watcher.ts}, \path{cli/assets/hermes/plugin/} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Data structures}
+
+\paragraph{Notifications.}
+\code{TapNotification} gained three fields (\code{coalesceKey}, \code{coalesceStrategy}
+and \code{count}), all optional so that a batch produced by an older daemon renders
+unchanged. The queue keeps a \code{Map<coalesceKey, entry>} beside
+the array buffer; the invariant that the map never points at an entry outside the buffer
+is maintained at exactly two places (drain and max-size eviction) and is covered by unit
+tests.
+
+\paragraph{Attention ledger file.}
+Listing~\ref{lst:ledger} shows the on-disk shape. Day buckets are keyed by UTC date so
+that the weekly window (\code{renderedInWindow(peer, 7)}) is a simple prefix comparison
+over keys, and pruning on write bounds the file at the retention period.
+
+\begin{lstlisting}[language=json,caption={Shape of \code{attention-ledger.json} (abridged).},label={lst:ledger}]
+{
+  "version": 1,
+  "identity": { "chain": "eip155:8453", "agentId": 1 },
+  "days": {
+    "2026-08-27": {
+      "peers": {
+        "eip155:8453#11": { "notificationsRendered": 1, "tokensInjected": 24,
+                            "escalations": 0, "overflowSuppressed": 0 },
+        "unattributed":   { "notificationsRendered": 1, "tokensInjected": 31,
+                            "escalations": 1, "overflowSuppressed": 0 }
+      },
+      "totals": { "notificationsRendered": 2, "tokensInjected": 55,
+                  "escalations": 1, "overflowSuppressed": 0 }
+    }
+  }
+}
+\end{lstlisting}
+
+\paragraph{Postage state.}
+\path{<dataDir>/apps/postage/state.json} holds two maps keyed by \code{creditId}:
+\code{issued} (credits peers bought \emph{with} this agent; fields \code{peer},
+\code{amount}, \code{spent}, \code{lastSeq}, \code{lastStampKey}, \code{txHash},
+\code{certificate}) and \code{held} (credits this agent bought \emph{at} peers; fields
+\code{nextSeq}, \code{certificateVerified} in place of \code{lastSeq}). Amounts are
+decimal strings with at most six places and are converted to integer micro-units
+(\code{bigint}) for every arithmetic operation; no floating point touches money.
+
+\subsection{Wire formats}
+
+\paragraph{Registration file.}
+The \code{trustedAgentProtocol.attention} block (Listing~\ref{lst:regfile}) is validated
+by the same \code{validateRegistrationFile} that already checks the XMTP endpoint, on both
+the publishing and the resolving side, so a malformed price list is rejected before it
+can be cached.
+
+\begin{lstlisting}[language=json,caption={Attention block in the ERC-8004 registration file.},label={lst:regfile}]
+"trustedAgentProtocol": {
+  "agentAddress": "0x...",
+  "attention": {
+    "version": "1.0",
+    "currency": "USDC",
+    "chain": "eip155:167000",
+    "pricing": { "grantHolder": "0", "standard": "0.001", "priority": "0.01" }
+  }
+}
+\end{lstlisting}
+
+\paragraph{Rejection.}
+The transport previously collapsed any service error into the generic JSON-RPC
+\code{-32603}. It now preserves \code{AttentionPaymentRequiredError} as \code{-32050}
+with structured \code{data} (Listing~\ref{lst:reject}), and the sending side raises a
+\code{TransportRpcError} that keeps \code{rpcCode} and \code{rpcData} so that callers
+can react programmatically. The CLI and \code{tapd} translate the same object to HTTP
+\code{402 attention\_payment\_required}.
+
+\begin{lstlisting}[language=json,caption={A \code{-32050} rejection as seen by the sender.},label={lst:reject}]
+{
+  "jsonrpc": "2.0", "id": "req-...",
+  "error": {
+    "code": -32050,
+    "message": "attention payment required: ...",
+    "data": {
+      "attention": { "version": "1.0", "currency": "USDC",
+                     "chain": "eip155:167000",
+                     "pricing": { "standard": "0.001", "priority": "0.01" } },
+      "postage": { "reason": "insufficient_credit", "creditId": "...",
+                   "remaining": "0", "required": "0.001" }
+    }
+  }
+}
+\end{lstlisting}
+
+\paragraph{Stamp.}
+A stamp is a \code{postage} object with three fields, \code{creditId}, \code{seq} and
+\code{cost}, inside the existing \code{trustedAgent} metadata of a \code{message/send}
+(for example \code{\{"creditId": "c-7f3a", "seq": 3, "cost": "0.001"\}}).
+\path{extractPostageStamp} guards only shape; economic validity is the ledger's decision,
+so a malformed stamp can never crash enforcement.
+
+\subsection{The service gate}
+
+The gate is a single block in \code{TapMessagingService.processInboundRequest}, placed
+after contact resolution and duplicate detection but before the conversation log. Its
+ordering constraints are the subtle part of the implementation and are worth stating:
+
+\begin{enumerate}
+  \item Enforcement runs only for \code{message/send} and only when
+        \code{config.attention.enforce} is true.
+  \item A rejected request marks its journal entry \code{completed} \emph{before} throwing,
+        so that a full-history sync hits the duplicate short-circuit rather than re-running
+        enforcement per replay.
+  \item An accepted stamp completes the journal entry \emph{after} the conversation log.
+        A crash between the debit and that completion redelivers the message with its
+        journal entry pending; the ledger's \code{lastStampKey} lets that exact redelivery
+        pass idempotently, and the event is emitted even though the delivery is a duplicate,
+        because otherwise the receiver would keep the money and drop what it bought.
+  \item For a grant holder the gate does not reject; it calls
+        \code{chargeOptionalPriorityStamp}, which debits only if the stamp meets the
+        \code{priority} price and swallows every failure.
+\end{enumerate}
+
+The \code{message.received} event carries an optional \code{postage: \{tier, cost\}}
+reference only when a stamp was actually debited, so downstream consumers cannot
+mistake a free delivery for a paid one.
+
+\subsection{Top-up orchestration}
+
+\code{topUpPostage} runs under the service's execution mutex and inside a transport
+session. It (i)~validates the amount; (ii)~pays through the host's
+\code{executeTransfer} hook---the same hook \code{tap transfer} uses, so the payment is an
+ordinary USDC transfer on the contact's chain, signed through OWS; (iii)~records the held
+credit; (iv)~sends the \code{postage/topup} action and waits for the result with a waiter
+that settles on \emph{any} result for the request, not only one carrying the
+\code{actionId}, so that a pre-postage peer's \code{UNSUPPORTED\_ACTION} reply is read as
+a definitive rejection rather than a timeout; (v)~verifies the returned certificate
+against the contact's agent address and marks the held credit verified. A transport
+failure after payment is returned as \code{status: pending} with the \code{txHash}
+rather than thrown, because the payment has happened and the caller must be told so.
+
+\subsection{Host surfaces}
+
+Following the ``thin plugin, fat CLI'' rule, only operations that need the live transport
+were added to the plugin surface. Table~\ref{tab:surfaces} lists the new commands.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Operator-facing surfaces added by the project.}
+\label{tab:surfaces}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}Xl@{}}
+\toprule
+\textbf{Surface} & \textbf{Behaviour} & \textbf{Transport?} \\
+\midrule
+\code{tap attention show} & Per-peer attention usage over the retained window, highest token spend first; reads \code{attention-ledger.json}. & No \\
+\code{tap identity resolve <id>} & Now prints the peer's advertised \code{attention} block. & No \\
+\code{tap register update} & Publishes \code{attention.pricing} from config into the registration file. & No (on-chain) \\
+\code{tap message send --dry-run} & Shows the peer's price, \code{postage\_remaining} and \code{would\_stamp}; sends nothing. & No \\
+\code{tap message send --priority} & Pays the peer's \code{priority} price so the message escalates and may wake the peer. & Yes \\
+\code{tap postage topup <peer> --amount} & Pays USDC on-chain, opens a credit, stores the certificate; \code{--yes}, \code{--dry-run}. & Yes \\
+\code{tap postage balance [--peer]} & Credits held at peers and issued to peers. & No \\
+\code{tap\_gateway send\_message \{priority\}} & OpenClaw and Hermes tool flag mirroring \code{--priority}. & Yes \\
+\code{tapd} \code{POST /api/postage/*}, \code{/api/notifications/drain} & Daemon routes behind which the CLI and plugins operate. & --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The Hermes Python plugin, which mirrors the render plan rather than importing it, was
+extended to render the \code{(xN)} suffix and to forward the \code{priority} flag, and its
+Python tests (\code{test\_client.py}) pin both behaviours; the folded-quota summary needs no
+host-side change because it arrives as an ordinary \code{summary} notification.
+
+\subsection{Testing}
+
+Testing follows the repository's existing three tiers.
+
+\paragraph{Unit.} New suites cover the queue invariants (merge in place, index pruned on
+eviction, \code{replace} strategy never counts), the render plan (partition stability,
+grouped summary text, cap), the attention ledger (bucketing, retention, window counts),
+the postage ledger (idempotent \code{recordIssued}, one credit per \code{txHash}, per-peer
+cap, replay rejection, redelivery exception, no double spend under concurrent debits), the
+certificate (sign/verify round trip; wrong signer rejected), the payload parsers, the
+quota fold (escalations excluded; fail-open on lookup error), and the OpenClaw escalation
+watcher.
+
+\paragraph{Service.} \code{service.test.ts} exercises the gate against a mocked transport:
+enforcement off is a no-op; un-granted and unstamped is rejected with a quote; a grant
+exempts; a valid stamp debits; an exhausted credit yields \code{insufficient\_credit}; a
+grant holder's priority stamp buys the escalation tier.
+
+\paragraph{Mock end-to-end.} Three new phases were added to the canonical scenario list
+shared by both E2E suites (Table~\ref{tab:e2e}). They run over the loopback transport on
+every pull request. They are deliberately \emph{not} mirrored into the live-mainnet suite
+yet: the key assertions are negative (``B never logged the message''), which are
+timing-flaky over real XMTP, and both mechanisms are opt-in so live behaviour is
+unchanged. This gap is recorded as a follow-up in the pull request.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Mock E2E scenarios added (phases 6--8 of \code{packages/cli/test/e2e/scenarios.ts}).}
+\label{tab:e2e}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Phase} & \textbf{Scenarios} \\
+\midrule
+6 Attention &
+Preview cost with \code{--dry-run}; enable enforcement on B; send without grant rejected with quote; \code{message/send} grant exempts sender. \\
+7 Postage &
+Revoke grant so postage applies; top-up buys credit with signed certificate; auto-stamped message delivers and debits; exhausted credit rejected with top-up quote; \code{postage balance} shows held and issued credits on both sides. \\
+8 Wake \& quota &
+Publish a \code{priority} price; priority stamp escalates with a 400-char excerpt; over-quota grant holder's chatter folds to one summary line; grant holder's priority stamp still buys the wake-up. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Documentation}
+
+Every new command and flag was added to the canonical skill file
+\path{skills/trusted-agents/SKILL.md}, which the OpenClaw plugin and the Hermes installer
+copy at build time, and the \code{notificationsPerWeek} constraint to
+\path{references/permissions-v1.md}. The skill's ``how to read the block'' guidance was
+rewritten so that an agent encountering \code{(xN)}, a folded-quota summary or a
+``Priority message from'' escalation knows what each means and how to act. The
+repository's \code{README} and \code{Agents.md} were aligned in a final documentation
+commit.

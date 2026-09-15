@@ -1,0 +1,103 @@
+\section{Introduction}
+\label{sec:introduction}
+
+\subsection{Context}
+
+The Trusted Agents Protocol (TAP) is an open-source, local-first protocol stack that lets
+personal AI agents---an OpenClaw or Hermes assistant run by one person---find, verify and
+message the agents run by people they already know~\cite{tap-repo}. Each agent holds an
+on-chain identity as an ERC-8004 token~\cite{erc8004}, publishes a registration file
+describing its messaging endpoint, connects to peers through signed invitation links, and
+exchanges JSON-RPC~2.0 payloads over the XMTP messaging network~\cite{xmtp}. Owners
+control what a peer may ask for through \emph{directional permission grants}, for example
+``may request up to 10~USDC per week''. TAP is explicitly built for trust between known
+humans mediated through their agents, not for an open marketplace.
+
+Taiko, the industry partner for this capstone, operates an Ethereum-based rollup
+(Taiko Alethia) and had already integrated with TAP at the identity layer: agents can
+register on Taiko (\code{eip155:167000}) and can upload their registration file through
+\emph{Tack} (\code{tack.taiko.xyz}), Taiko's x402-metered IPFS upload
+service~\cite{x402}. The project brief extended this from paid storage to a broader notion
+of paid interaction between agents.
+
+\subsection{Problem}
+
+Once two agents are connected, TAP as of April~2026 delivered every peer message into the
+receiving agent's context without any notion of cost. This creates three concrete
+problems, all observed in the codebase before this work:
+
+\begin{enumerate}
+  \item \textbf{Unmetered attention.} A peer message costs the \emph{receiver} LLM tokens on
+        every prompt into which it is rendered, and in streaming hosts it can wake an idle
+        agent. The sender pays nothing. This is structurally the same externality that
+        made e-mail spam economically rational~\cite{dwork-naor,hashcash}.
+  \item \textbf{Buried escalations.} The notification block injected into the agent's prompt
+        was rendered first-in-first-out with a hard cap of twenty lines. A burst of chatter
+        arriving before a transfer-approval request pushed the request into an opaque
+        ``$N$ more omitted'' footer. The one line the operator most needed to see was the
+        one most likely to be hidden.
+  \item \textbf{No vocabulary for pricing.} Even if a receiver wanted to charge for attention,
+        the protocol had no way to advertise a price, no error that a sender could interpret
+        as ``payment required'', and no unit in which attention could be measured or billed.
+\end{enumerate}
+
+\subsection{Objectives}
+
+The capstone set out to make LLM attention a first-class, measurable and optionally
+prepaid resource on top of TAP's existing invite-and-grant trust baseline. Concretely:
+
+\begin{enumerate}[label=O\arabic*.]
+  \item Reduce the context a message flood injects into the receiver's prompt, and
+        guarantee that escalations are always rendered.
+  \item Measure attention spend per peer so that pricing decisions rest on data.
+  \item Let an agent advertise attention prices and reject un-granted, unpaid messages
+        with a machine-readable quote, without changing the behaviour of any agent that
+        does not opt in.
+  \item Provide prepaid postage so that a sender pays once and spends many times, with
+        replay and double-spend protection.
+  \item Let a sender pay for an escalation (a ``priority'' message) and let a receiver
+        meter the free tier of a grant holder through a weekly notification quota.
+  \item Validate the mechanisms with a reproducible evaluation.
+\end{enumerate}
+
+\subsection{A change of approach, stated up front}
+
+The first progress journal proposed to meet these objectives with a standalone
+TypeScript service modelled on Tack: senders would pay per message through x402 on Taiko
+Alethia, and the service would gate delivery. The implemented system does not do this.
+Section~\ref{sec:design-pivot} sets out why: the scarce resource is the receiver's
+attention, which only the receiver's own daemon can observe and account for; TAP already
+supplies authenticated peer identity and grants that a standalone service would have to
+duplicate; and the upstream TAP maintainers' research note for the messaging layer argued for keeping
+chain RPC out of the hot path in favour of prepaid credits~\cite{tap-research-note}. The
+change was a design decision taken with the full time budget available, not a fallback.
+The x402 idea survives in the implemented system as a ``402 over XMTP'': a JSON-RPC
+\code{-32050} error whose \code{data} carries the same price list the agent publishes on
+chain.
+
+\subsection{Contributions and division of work}
+
+This is an individual report on a two-person project. The author (Yiqun Xu) designed and
+implemented the entire paid-attention layer described in
+Sections~\ref{sec:design}--\ref{sec:implementation}: 23~implementation commits on the
+branch \path{feat/phase1-notification-coalescing}, roughly 8{,}200 added lines across
+91~files, including a new workspace package \code{@trustedagents/app-postage}, mock
+end-to-end test phases~6--8, and the accompanying documentation in the TAP skill file. The
+teammate (Zhang Hanyu) led the earlier design exploration and owned the evaluation:
+the benchmark scripts and \path{evaluation/results.md} merged as pull request~\#2. All
+figures in Section~\ref{sec:evaluation} are his and are reproduced exactly.
+Section~\ref{sec:project-management} gives the full account, including the fact that the
+industry mentor has been unreachable since late August~2026 and that the final design
+therefore carries no mentor sign-off.
+
+\subsection{Report structure}
+
+Section~\ref{sec:background} introduces TAP, the surrounding standards and the related
+work on attention pricing. Section~\ref{sec:requirements} states the requirements and the
+threat model. Section~\ref{sec:design} presents the design and its rationale, including
+the pivot away from a standalone service. Section~\ref{sec:implementation} describes the
+implementation. Section~\ref{sec:evaluation} reports the evaluation.
+Section~\ref{sec:discussion} discusses limitations and security considerations.
+Section~\ref{sec:project-management} covers project management and the division of
+labour. Section~\ref{sec:conclusion} concludes with future work. Appendices reproduce
+the operator-facing configuration, the wire formats and the commit log.

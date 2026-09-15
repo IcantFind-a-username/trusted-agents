@@ -1,0 +1,179 @@
+\section{Evaluation}
+\label{sec:evaluation}
+
+\subsection{Attribution and method}
+
+The evaluation was designed and executed by the project teammate, Zhang Hanyu, and is
+recorded in \path{evaluation/results.md} together with the benchmark scripts
+\path{scripts/benchmark-attention.ts} and \path{scripts/benchmark-postage.ts}, merged
+into the implementation branch as pull request~\#2 (merge commit
+\code{0330091})~\cite{tap-eval}. This section reproduces his results without alteration
+and adds the author's interpretation in the light of the design. Where the two are mixed
+the text says so.
+
+The evaluation asks three questions, one per requirement group:
+
+\begin{enumerate}[label=Q\arabic*.]
+  \item Does coalescing with escalation-first rendering reduce the notification context
+        injected into the receiver's prompt, and keep the escalation visible? (FR1, FR2)
+  \item Does prepaid postage impose an economic limit on repeated delivery? (FR5, FR7)
+  \item Do priority messages remain visible when ordinary notifications are limited by a
+        quota? (FR9, FR10)
+\end{enumerate}
+
+The experiments were run on Windows against the branch as merged. The teammate reports
+that the project built after minor local compatibility fixes to TypeScript typing and
+build scripts, but that the OWS native package
+\path{@silicon-intern/ows-core-win32-x64-msvc} was unavailable in that environment. This
+constrained which mechanisms could be exercised end to end and is discussed under Q3 and
+in Section~\ref{sec:limitations}.
+
+\subsection{Experiment 1: notification flood and attention reduction}
+\label{sec:eval-flood}
+
+\paragraph{Set-up.}
+Three peer agents send $N$ ordinary chat messages in round-robin, after which one
+transfer request requiring approval arrives. The arrival order is the worst case for a
+FIFO renderer: the escalation is last. Two pipelines are compared on identical event
+streams: the \emph{legacy} pipeline (append-only queue, per-event rendering, hard cap of
+twenty lines, opaque ``$N$ more omitted'' footer) and the \emph{new} pipeline (coalescing
+queue, escalation-first plan, grouped summary). $N \in \{10, 50, 100, 500, 1000\}$.
+Token cost is estimated with the project's existing approximation
+$\lceil \text{characters}/4 \rceil$; the figures are therefore estimated tokens, not
+tokenizer counts. ``Escalation visible'' records whether the transfer request appears as a
+rendered line.
+
+\paragraph{Results.}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Experiment 1: estimated tokens injected per prompt and escalation visibility
+(teammate's results, reproduced verbatim).}
+\label{tab:flood}
+\begin{tabular}{@{}rrrrll@{}}
+\toprule
+\textbf{Messages} & \textbf{Legacy tokens} & \textbf{New tokens} & \textbf{Reduction} & \textbf{Legacy escal.} & \textbf{New escal.} \\
+\midrule
+10   & 256 &  97 & 62.1\% & Visible & Visible \\
+50   & 482 &  98 & 79.7\% & Hidden  & Visible \\
+100  & 482 &  98 & 79.7\% & Hidden  & Visible \\
+500  & 482 & 100 & 79.3\% & Hidden  & Visible \\
+1000 & 483 & 100 & 79.3\% & Hidden  & Visible \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Interpretation.}
+Three observations follow directly from the numbers, and each traces to a specific design
+decision.
+
+First, the new pipeline's cost is essentially \emph{flat}: 97--100 estimated tokens from
+10 to 1000 messages. This is the coalescing invariant of \S\ref{sec:design-coalescing} at
+work---three peers produce three counted lines regardless of $N$, and the only growth is
+the width of the \code{(xN)} suffix as the count gains digits. The legacy pipeline
+saturates at 482--483 tokens from $N=50$ onward because its cap of twenty lines is
+already full at 50 messages; the reduction therefore stabilises at about 79\% rather than
+growing without bound, which is the honest way to read the table. At $N=10$ the legacy
+renderer is under its cap, so the gap is smaller (62.1\%).
+
+Second, the legacy pipeline \emph{hides the escalation} at every flood size of 50 and
+above, exactly the failure that motivated FR2: twenty chat lines fill the cap and the
+approval request falls into the footer. The new pipeline renders it in every case,
+because the plan partitions escalations first. The evaluation thus confirms both halves
+of the coalescing increment---less context, and the right context.
+
+Third, the absolute numbers matter less than their shape. A saving of roughly 380
+estimated tokens per prompt is modest in isolation; but the block is injected on
+\emph{every} prompt while the notifications are pending, in a streaming host it is
+injected on every wake, and without coalescing the block's size is set by the most
+talkative peer rather than by the operator. Bounding it is what makes a per-peer
+attention price meaningful at all (principle P2).
+
+\paragraph{Reproducibility.}
+The scenario is synthetic and deterministic (fixed peer names, templated message text,
+fixed timestamps), so re-running \code{bun scripts/benchmark-attention.ts} on any
+platform should reproduce Table~\ref{tab:flood} exactly. The author was unable to
+re-execute it in the environment used to prepare this report and makes no claim of
+independent replication.
+
+\subsection{Experiment 2: prepaid postage and economic message control}
+\label{sec:eval-postage}
+
+\paragraph{Set-up.}
+The experiment drives the implemented \code{FilePostageLedger} directly, in a temporary
+data directory. A sender is issued a credit of 0.002~USDC; the receiver's standard price is
+0.001~USDC per message. Three debits are attempted with sequence numbers 1, 2, 3.
+
+\paragraph{Results.}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Experiment 2: stamp debits against a 0.002~USDC credit at 0.001~USDC per message
+(teammate's results, reproduced verbatim).}
+\label{tab:postage}
+\begin{tabular}{@{}rrlr@{}}
+\toprule
+\textbf{Message} & \textbf{Cost} & \textbf{Result} & \textbf{Remaining credit} \\
+\midrule
+1 & 0.001 USDC & Accepted & 0.001 USDC \\
+2 & 0.001 USDC & Accepted & 0 USDC \\
+3 & 0.001 USDC & Rejected & 0 USDC \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The third debit returns the rejection reason \code{insufficient\_credit}.
+
+\paragraph{Interpretation.}
+The ledger admits exactly $\lfloor 0.002 / 0.001 \rfloor = 2$ standard attention units
+and then refuses, which is the behaviour FR7 specifies: one payment, many spends, a hard
+stop. The rejection is the same \code{PostageRejection} object that the service wraps in
+a \code{-32050} on the wire (Listing~\ref{lst:reject}), carrying \code{remaining: "0"} and
+\code{required: "0.001"}, so a sender's daemon can conclude mechanically that a top-up is
+the remedy. The experiment also shows the accounting is exact in integer micro-units: the
+remaining balance is reported as \code{0}, not as a floating-point residue.
+
+What the experiment does not show should be stated plainly. It exercises the debit rule in
+isolation: it does not include the on-chain payment, the \code{postage/topup}
+round-trip, the certificate, or the transport. Those paths are covered by the mock E2E
+phase~7 (Table~\ref{tab:e2e}), which runs in continuous integration but was not part of
+this evaluation and has not yet been executed against live XMTP.
+
+\subsection{Experiment 3: priority messages and notification quota}
+\label{sec:eval-quota}
+
+\paragraph{Intended set-up.}
+A grant holder with \code{notificationsPerWeek} exhausted sends ordinary chatter and one
+priority-stamped message; the receiver's drained batch is inspected for a single folded
+summary line and an unfolded ``Priority message from'' escalation.
+
+\paragraph{Outcome.}
+A direct local execution was attempted but could not be completed: the benchmark requires
+the daemon's runtime, which loads the OWS native module, and
+\path{@silicon-intern/ows-core-win32-x64-msvc} was not available in the Windows
+environment. The teammate therefore documented the experiment on the basis of (i)~the
+implemented quota logic in \code{notification-quota.ts}, (ii)~the mock E2E phase~8
+scenarios, which assert precisely the intended outcome on the loopback transport, and
+(iii)~source-level review of the escalation-exclusion rule. He characterises the block as
+an environment limitation rather than a logic failure, and the author agrees: the phase-8
+scenarios and the nine unit tests in \code{notification-quota.test.ts} (including
+``never folds escalations'' and ``fails open when the trust store or ledger cannot
+answer'') pass in CI on Linux. Nevertheless, Q3 is answered by tests written by the
+implementer, not by an independent measurement, and this report records it as such.
+
+\subsection{Summary of findings}
+
+\begin{description}[style=nextline,leftmargin=1.2em]
+  \item[Finding 1 --- Coalescing bounds attention cost and protects escalations.]
+        Estimated injected tokens fall by 62.1\% at $N=10$ and by 79.3--79.7\% at
+        $N \ge 50$, and the new pipeline's cost is flat in $N$; the escalation is visible in
+        all five new-pipeline runs and hidden in four of five legacy runs
+        (Table~\ref{tab:flood}).
+  \item[Finding 2 --- Postage creates an explicit economic boundary.]
+        A 0.002~USDC credit at 0.001~USDC per message admits two messages and rejects the
+        third with \code{insufficient\_credit} (Table~\ref{tab:postage}).
+  \item[Finding 3 --- Priority messages are preserved by design, not yet by measurement.]
+        The escalation-exclusion rule is implemented, unit-tested and E2E-tested on the
+        loopback transport; a standalone local benchmark was blocked by a platform
+        dependency.
+\end{description}

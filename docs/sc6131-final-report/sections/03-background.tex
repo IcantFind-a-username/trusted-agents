@@ -1,0 +1,102 @@
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{The Trusted Agents Protocol}
+
+TAP is organised as a small monorepo of TypeScript packages with a strict dependency
+direction~\cite{tap-repo}. \code{core} owns the wire protocol, identity resolution, the
+XMTP transport, the trust store (contacts and grants), conversation logging and the
+request journal. Host adapters compose \code{core} without re-implementing it: the
+\code{tap} command-line interface, \code{tapd} (a long-lived daemon that holds the single
+XMTP client for one identity and exposes a local HTTP API), the OpenClaw Gateway plugin and
+the Hermes integration. The repository's own guidance summarises the discipline as
+``thin plugin, fat CLI'': a host may only expose what requires a live transport
+connection.
+
+Three properties of the pre-existing system shaped the present work.
+
+\paragraph{Identity and trust are already authenticated.}
+An agent's identity is an ERC-8004 token~\cite{erc8004}; its \code{tokenURI} points to a
+registration file that names the agent's XMTP endpoint address, and \code{ownerOf}
+identifies its owner. A peer is admitted only after a signed invite has been exchanged and
+recorded as an \emph{active contact}; unknown senders are rejected at the transport
+boundary. Grants are directional: the receiver records what it has granted to each peer
+(\code{grantedByMe}) with a scope such as \code{message/send} or \code{transfer/request}
+and optional constraints. Every signing operation---invites, EIP-7702 or ERC-4337
+transactions, and now postage certificates---goes through an Open Wallet Service (OWS)
+signing provider; the agent process never holds a raw private key.
+
+\paragraph{Messages are JSON-RPC over XMTP.}
+The canonical methods~\cite{jsonrpc} are \code{connection/request},
+\code{connection/result} and \code{connection/revoke} for the handshake,
+\code{permissions/update} for grants, \code{message/send} for chat, and
+\code{action/request} with \code{action/result} for typed actions. Applications extend the
+protocol by registering \emph{action types} (for example \code{transfer/request} or
+\code{scheduling/propose}) with the app registry; a \emph{TAP app} is a package that
+defines handlers for its action types and is installed from a manifest.
+
+\paragraph{The daemon owns a notification pipeline.}
+\code{tapd} classifies typed runtime events (\code{message.received},
+\code{action.pending}, \code{connection.established}, \ldots) into
+\code{TapNotification} records of type \code{info}, \code{escalation}, \code{auto-reply}
+or \code{summary}, buffers them in an in-memory queue, and lets hosts drain the queue.
+OpenClaw drains it in a \code{before\_prompt\_build} hook and injects a
+\code{[TAP Notifications]} block into the agent's prompt; escalations additionally call
+\code{requestHeartbeatNow()} to wake the agent. Hermes has no wake API and shows the block
+on the next turn~\cite{tapd-spec}. Before this project, the queue was append-only and the
+renderer emitted the first twenty lines in arrival order.
+
+\subsection{Taiko, Tack and x402}
+
+Taiko Alethia is a based rollup on Ethereum; TAP supports it as a registration chain
+alongside Base~\cite{taiko}. x402 is an HTTP-native payment protocol that revives the
+reserved \code{402 Payment Required} status: a server answers an unpaid request with a
+machine-readable price, the client pays and retries with a payment proof, and a
+facilitator verifies settlement~\cite{x402}. Tack is Taiko's x402-metered IPFS upload
+service; TAP's \code{tap register --ipfs-provider tack} pays for the upload of the
+registration file with USDC on Taiko. Tack therefore meters a resource located at the
+service---storage---at the moment of the request. The question this capstone had to
+answer was whether the same pattern was the right one for a resource located at the
+receiving \emph{peer}.
+
+\subsection{Attention as the scarce resource}
+
+The observation that ``a wealth of information creates a poverty of attention'' is
+Simon's~\cite{simon}. For LLM-hosted agents the observation is literal: an agent's working
+memory is a bounded token window, each token in it has a monetary and latency cost, and an
+idle agent that is woken pays a fixed cost per wake regardless of the message's value.
+Attention here has three distinguishable prices---context (tokens per prompt), wake-ups
+(interrupt cost), and the operator's time when an approval is requested---and a good
+metering design should be able to separate them.
+
+\subsection{Related work on pricing unsolicited messages}
+
+\paragraph{Proof of work.} Dwork and Naor proposed that a sender attach a moderately hard
+computation to each message so that bulk sending becomes expensive~\cite{dwork-naor};
+Hashcash made the idea deployable~\cite{hashcash}, and memory-bound variants were
+explored to equalise cost across hardware~\cite{abadi}. Laurie and Clayton showed that,
+for e-mail, any work parameter cheap enough for legitimate senders is cheap enough for
+spammers renting compromised machines~\cite{laurie-clayton}. In the present setting the
+argument is stronger still: an agent that floods a peer is not necessarily malicious---it
+may be a well-meaning agent with a verbose prompt---so the cost should be legible and
+attributable, which computation is not and money is.
+
+\paragraph{Rate-limited relays.} Waku's RLN-Relay attaches a zero-knowledge rate-limiting
+nullifier to each message so that relays can slash a member who exceeds an epoch
+quota~\cite{waku-rln}. This protects the \emph{relay}; it says nothing about whether a
+message was worth reading. TAP's research note reached the same conclusion: relays should
+verify cheap proofs and decrement balances, and never inspect payments in the hot
+path~\cite{tap-research-note}.
+
+\paragraph{Postage and paid delivery.} Sender-pays postage for e-mail was proposed and
+piloted repeatedly and failed for reasons of coordination---no single party could compel
+every mail server to honour a stamp. TAP's setting removes that obstacle: every message is
+already pairwise, authenticated and delivered to a single daemon that the receiving owner
+controls, so the receiver can unilaterally decide what a stamp buys.
+
+\paragraph{Agent protocols.} Google's Agent-to-Agent protocol defines tasks, artefacts and
+capability cards for agent interoperation~\cite{a2a} but does not price attention. TAP's
+own research note surveyed A2A, XMTP, Waku, x402 and SIWX and recommended a two-step
+payment model---on-chain payment converted once into credits, credits spent off-chain per
+message~\cite{tap-research-note}. That recommendation is the direct ancestor of the
+postage design in Section~\ref{sec:design}.

@@ -1,0 +1,53 @@
+% ---------------------------------------------------------------------------
+% Title page
+% ---------------------------------------------------------------------------
+\begin{titlepage}
+\centering
+\vspace*{10mm}
+
+{\large\textsc{Nanyang Technological University}\par}
+{\normalsize College of Computing and Data Science\par}
+\vspace{2mm}
+{\normalsize \Programme\par}
+
+\vspace{18mm}
+
+{\large\textbf{\CourseCode}\par}
+{\normalsize Final Report\par}
+
+\vspace{14mm}
+
+{\LARGE\bfseries\setstretch{1.15} \ReportTitle\par}
+
+\vspace{20mm}
+
+\begin{tabular}{@{}r@{\hspace{1.2em}}l@{}}
+\textbf{Student}      & \StudentName \\
+\textbf{Matric.\ No.} & \StudentId \\
+\textbf{E-mail}       & \href{mailto:\StudentEmail}{\StudentEmail} \\[6pt]
+\textbf{Industry Partner} & \Partner \\
+\textbf{Industry Mentor}  & \Mentor \\
+\textbf{Academic Supervisor} & \Supervisor \\
+\textbf{Project Teammate}    & \Teammate \\[6pt]
+\textbf{Submission Deadline} & \DueDate \\
+\end{tabular}
+
+\vfill
+
+\begin{minipage}{0.86\textwidth}
+\small
+\textbf{Artefact.} The implementation described in this report is the branch
+\code{\Branch} of the repository \url{\RepoUrl}, submitted as pull request~\#1:
+\url{\PrUrl}. The evaluation artefacts (\path{evaluation/results.md} and the
+benchmark scripts) were contributed by the project teammate and merged into the same
+branch as pull request~\#2 (merge commit \code{0330091}).
+
+\medskip
+\textbf{Declaration.} This is an individual report. The division of work between the
+two team members is stated explicitly in Section~\ref{sec:project-management}. All
+quantitative results are reproduced from the teammate's evaluation record without
+alteration and are attributed accordingly.
+\end{minipage}
+
+\vspace{8mm}
+\end{titlepage}

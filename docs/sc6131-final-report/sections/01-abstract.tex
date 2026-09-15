@@ -1,0 +1,52 @@
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+Personal AI agents that talk to one another over an open messaging network expose a
+resource that existing anti-spam mechanisms do not price: the receiving agent's
+large-language-model (LLM) context. Every inbound peer message is eventually rendered
+into the receiver's prompt, where it costs tokens, and some messages additionally wake
+an idle agent. Neither cost is borne by the sender, and a flood of low-value chatter can
+bury a genuinely important event---such as a pending transfer approval---below a rendering
+cap.
+
+This report describes the design and implementation of a paid-attention layer for the
+Trusted Agents Protocol (TAP), a local-first protocol in which agents hold ERC-8004
+identities, connect through signed invites, and exchange JSON-RPC messages over XMTP. The
+work was carried out with Taiko as industry partner. The initial project plan, recorded in
+the first progress journal, was to build a standalone ``Tack-like'' TypeScript service
+that charged for message delivery through x402 payments on Taiko Alethia. That plan was
+deliberately revised: because the scarce resource is the receiver's attention rather than
+storage or bandwidth at a relay, the meter belongs in the receiver's own TAP daemon, where
+the cost is actually incurred and where authenticated peer identity and permission grants
+already exist. The result is a TAP-native design that retains the x402 idea---a
+machine-readable ``payment required'' response carrying a quote---but carries it over XMTP
+as JSON-RPC error \code{-32050}.
+
+The implementation, contributed by the author, proceeds in dependency order.
+(1)~Notification coalescing and escalation-first rendering reduce injected context and
+guarantee that escalations are never displaced by chatter. (2)~A file-backed attention
+ledger measures, per peer and per day, the notification lines rendered, the estimated
+tokens injected, the escalations surfaced and the events suppressed. (3)~Optional
+attention pricing advertises per-tier prices in the agent's registration file and, when
+enforcement is enabled (default off), rejects un-granted messages with a quote.
+(4)~Prepaid postage lets a sender pay once on-chain, receive a signed credit certificate,
+and then attach stamps to many messages; a strictly increasing sequence number and a
+single-writer ledger make stamps replay- and double-spend-resistant. (5)~Priority stamps
+buy an escalation and, in OpenClaw, an immediate wake-up, while a
+\code{notificationsPerWeek} grant constraint folds an over-quota grant holder's chatter
+into one summary line without ever dropping a message.
+
+The evaluation, designed and executed by the project teammate, shows that under floods
+of 50 to 1000 messages the coalescing pipeline reduces estimated injected tokens by
+79.3--79.7\% relative to the legacy FIFO renderer while keeping the escalation visible in
+every case, that the legacy pipeline hides the escalation at 50 messages and above, and that
+a 0.002~USDC prepaid credit at 0.001~USDC per message admits exactly two messages before
+the third is rejected with \code{insufficient\_credit}. The report closes with an honest
+account of the limitations: token counts are a \code{chars/4} approximation, the
+payment-verification hook accepts claimed transactions unless a host supplies chain
+access, and the priority/quota experiment could not be executed locally because the OWS
+native binary is unavailable on Windows.
+
+\medskip
+\noindent\textbf{Keywords:} AI agents, attention economics, anti-spam, prepaid credits,
+x402, XMTP, ERC-8004, Taiko, local-first systems.

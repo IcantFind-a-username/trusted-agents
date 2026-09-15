@@ -1,0 +1,115 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Security considerations}
+\label{sec:security}
+
+Table~\ref{tab:threats} maps the threats of Section~\ref{sec:threat-model} to the
+mitigations that the implementation carries, and names the test that pins each one where
+one exists.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Threats from a connected but hostile peer, and their mitigations.}
+\label{tab:threats}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.27\textwidth}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Threat} & \textbf{Mitigation} \\
+\midrule
+Flood the receiver's prompt with chatter &
+Coalescing bounds a peer to one line per coalesce key; the escalation-first plan keeps approvals visible; with enforcement on, un-granted chatter is rejected before it costs anything downstream; a grant holder's free tier can be capped with \code{notificationsPerWeek}. \\
+Bury an approval request &
+Stable partition of escalations ahead of all other types, independent of arrival order and of the cap (Table~\ref{tab:flood}, ``New escalation'' column). \\
+Replay a captured stamp &
+Strictly increasing \code{seq} per credit; a replayed or rewound \code{seq} is rejected without spending (\code{ledger.test.ts}: ``rejects replayed or rewound seqs''). \\
+Double-spend under concurrent delivery &
+Check-and-spend runs under one process-local mutex on the single-writer ledger (``concurrent debits never double-spend''). \\
+Probe another peer's credit &
+A credit owned by a different peer is reported as \code{unknown\_credit}, indistinguishable from a non-existent one (``rejects unknown credits and other peers' credits identically''). \\
+Mint balance by re-claiming a real \code{txHash} under new \code{creditId}s &
+One on-chain payment opens exactly one credit; \code{txHash} reuse is rejected (``txHash reuse is rejected''). \\
+Exhaust the receiver's signer with top-up requests &
+The ledger is the abuse gate and is consulted \emph{before} signing; replayed top-ups return the stored certificate without a signature; at most 16 live credits per peer (``caps live issued credits per peer''). \\
+Present a forged certificate &
+Certificates are verified against the issuer's agent address already in the holder's contact entry, the same trust anchor invites use (``rejects a certificate signed by someone other than the issuer''). \\
+Crash-window redelivery double-charges &
+\code{lastStampKey} lets the exact redelivered message pass free; journal ordering ensures the event it bought is still emitted. \\
+Malformed stamp crashes enforcement &
+\code{extractPostageStamp} guards shape only; economics are decided by the ledger; a grant holder's bad stamp degrades to plain delivery. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+One threat is \emph{not} mitigated by default and must be stated: a \emph{fabricated
+top-up}. The receiver's \code{verifyTopup} seam accepts the claimed \code{txHash} unless
+the host supplies a \code{verifyPostageTopup} hook that queries the chain. The design
+binds the credit and its certificate to the claimed hash, so an unbacked credit is
+auditable after the fact and the receiver's exposure is bounded by the per-peer credit cap
+and by the attention the credit can buy; but a receiver that enables enforcement without
+wiring the hook is trusting connected peers not to lie about payments. This is a
+conscious scoping decision (the hook exists; the chain adapter does not yet) and is the
+first item of future work.
+
+\subsection{Limitations}
+\label{sec:limitations}
+
+\paragraph{Token estimation.}
+Both the ledger and the evaluation use $\lceil \text{chars}/4 \rceil$. This is the
+approximation the project already used; it is roughly right for English prose under
+common tokenizers and wrong in both directions for names, hexadecimal identifiers and
+non-Latin text. Prices are expressed per notification line, not per token, precisely
+because the token figure is an estimate; the ledger's \code{tokensInjected} is a
+diagnostic, not a billing unit.
+
+\paragraph{Synthetic workloads.}
+Experiment~1 uses templated messages from three peers. Real traffic has more peers, more
+varied lengths and mixed event types, and the legacy pipeline's saturation point (20
+lines) would be reached differently. The qualitative conclusions---flat cost under
+coalescing, guaranteed escalation visibility---do not depend on the workload; the
+percentage does.
+
+\paragraph{No live-network execution of phases 6--8.}
+The attention, postage and quota scenarios run against the loopback transport only.
+Over real XMTP, the negative assertions (``the receiver never logged the message'') are
+timing-sensitive, and both mechanisms are opt-in, so the live suite was deliberately not
+extended. Settlement latency, XMTP delivery latency and on-chain fee for a top-up have
+therefore not been measured.
+
+\paragraph{Experiment~3 blocked.}
+The priority/quota benchmark could not be executed locally because the OWS native binary
+for Windows was unavailable. The mechanism is covered by unit and mock-E2E tests written by
+the author, which is weaker evidence than an independent run.
+
+\paragraph{Pricing is static.}
+Prices are fixed strings in the registration file and change only on
+\code{tap register update}. There is no adaptive pricing under load, no per-peer pricing
+and no refund path for a stamp whose message was later judged worthless.
+
+\paragraph{One transport owner, one writer.}
+Both ledgers assume the single-writer discipline TAP already imposes through the
+transport lock. A second process writing the same data directory would race the
+\code{tmp + rename} cycle. This is consistent with the rest of the codebase but is a
+constraint operators must respect.
+
+\paragraph{Cross-host wake parity.}
+A priority stamp buys an immediate wake only in OpenClaw. Hermes exposes no wake API, so
+the same paid message surfaces on the next turn. The sender pays the same price for
+different service depending on the receiver's host, and the registration file does not
+currently advertise which it is.
+
+\subsection{Reflection on the design pivot}
+
+With the implementation complete, the decision to abandon the standalone service can be
+judged on outcomes rather than arguments. The receiver-side design allowed grants to be
+free by construction, allowed the same ledger to drive both quotas and pricing, required
+no new identity or account model, kept the per-message path to one XMTP message with no
+chain access, and made the whole layer opt-in and backward compatible with a single
+configuration flag. It also cost the partner the per-message presence on Taiko that the
+Journal-1 design would have provided; what remains is one USDC settlement per credit on
+the receiver's chain, and the x402-style quote that a receiver publishes. The author
+believes this is the correct trade: a per-message on-chain payment for a 0.001~USDC
+attention unit would have been dominated by fees and latency, and would have priced
+messages rather than attention.
+
+The mentor's view of this trade-off was not obtained; Section~\ref{sec:project-management}
+records why.

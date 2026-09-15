@@ -1,0 +1,63 @@
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+\subsection{Conclusion}
+
+This capstone set out to make a personal AI agent's attention a first-class resource in
+the Trusted Agents Protocol. It did so by relocating the problem: instead of a standalone
+x402 service that would have priced messages at a third party, the receiver's own daemon
+now measures what each peer costs, publishes what it charges, and enforces payment with a
+machine-readable refusal---the x402 idea carried over XMTP as JSON-RPC \code{-32050}.
+Around that gate sit four mechanisms that were built in dependency order: coalescing and
+escalation-first rendering to eliminate waste before charging for it; a per-peer attention
+ledger to give pricing a unit; prepaid postage with signed credit certificates and
+replay-resistant stamps so that a sender pays once and spends many times; and priority
+stamps with weekly quotas to separate the price of context from the price of an
+interruption.
+
+The evaluation, conducted by the teammate, supports the two claims that could be measured
+in the available environment: coalescing holds injected context flat at 97--100 estimated
+tokens across floods of 10 to 1000 messages (a 62--80\% reduction) while never hiding the
+escalation that the legacy pipeline hid at every flood size of 50 and above; and a
+0.002~USDC credit at 0.001~USDC per message admits exactly two messages before a third is
+refused with \code{insufficient\_credit}. The third claim---that priority messages survive
+quota folding---is established by unit and mock end-to-end tests rather than by an
+independent benchmark, because the OWS native module was unavailable on the evaluation
+platform.
+
+The work is honest about what it is not. Token counts are estimates. Payment verification
+is a seam, not yet a chain adapter. The live-network suite does not yet cover the paid
+paths. Prices are static. And the design pivot that defines the project was made by the
+team without the industry mentor, who has been unreachable since late August. What the
+work is, is a complete, opt-in, backward-compatible and tested slice of an attention
+economy for agents, landed in a real codebase under its own conventions, with the
+measurement infrastructure needed to decide what to price next.
+
+\subsection{Future work}
+\label{sec:future-work}
+
+\begin{enumerate}
+  \item \textbf{On-chain payment verification.} Implement \code{verifyPostageTopup} with a
+        chain adapter (CAIP-2 keyed, starting with Base and Taiko) that checks the claimed
+        \code{txHash} transfers at least \code{amount} USDC to the receiver's agent address.
+        This closes the one unmitigated threat in Table~\ref{tab:threats}.
+  \item \textbf{Live E2E for phases 6--8.} Mirror the mock scenarios into the mainnet suite
+        with positive assertions (a received \code{-32050} on the sender side) instead of
+        negative ones, and measure top-up settlement latency and fee on both chains.
+  \item \textbf{Tokenizer-accurate accounting.} Replace $\lceil \text{chars}/4 \rceil$ with a
+        host-reported token count where the host knows its model, keeping the estimate as the
+        fallback.
+  \item \textbf{Adaptive and per-peer pricing.} Let a receiver publish a price that rises
+        with its recent attention spend, and let a grant carry a per-peer price override.
+        The ledger already provides the input.
+  \item \textbf{Advertising wake semantics.} Add to the registration file whether the
+        receiver's host honours immediate wake-ups, so a sender knows what a priority stamp
+        buys before paying.
+  \item \textbf{Credit portability and refunds.} Investigate whether the signed credit
+        certificate can serve as the basis for transferring unused credit between peers or
+        refunding it on revocation of a connection.
+  \item \textbf{Questions for the partner.} Whether Taiko wishes a Tack-style facilitator to
+        exist \emph{alongside} receiver-side postage for agents that cannot run a daemon; and
+        whether the \code{attention} block should be proposed as an extension to the
+        ERC-8004 registration schema.
+\end{enumerate}
