@@ -47,6 +47,99 @@ describe("validateRegistrationFile", () => {
 		expect(result.services[0].name).toBe("xmtp");
 	});
 
+	it("should accept a well-formed attention price block and return it intact", () => {
+		const withAttention = {
+			...VALID_REGISTRATION_FILE,
+			trustedAgentProtocol: {
+				...VALID_REGISTRATION_FILE.trustedAgentProtocol,
+				attention: {
+					version: "1.0",
+					currency: "USDC",
+					chain: "eip155:8453",
+					pricing: { grantHolder: "0", standard: "0.001", priority: "0.01" },
+				},
+			},
+		};
+		const result = validateRegistrationFile(withAttention);
+		expect(result.trustedAgentProtocol.attention?.pricing.standard).toBe("0.001");
+		expect(result.trustedAgentProtocol.attention?.currency).toBe("USDC");
+	});
+
+	it("should treat an absent attention block as no pricing", () => {
+		const result = validateRegistrationFile(VALID_REGISTRATION_FILE);
+		expect(result.trustedAgentProtocol.attention).toBeUndefined();
+	});
+
+	it("should accept unknown attention pricing tiers (additive)", () => {
+		const withFutureTier = {
+			...VALID_REGISTRATION_FILE,
+			trustedAgentProtocol: {
+				...VALID_REGISTRATION_FILE.trustedAgentProtocol,
+				attention: {
+					version: "1.0",
+					currency: "USDC",
+					pricing: { standard: "0.001", "some-future-tier": "5" },
+				},
+			},
+		};
+		expect(() => validateRegistrationFile(withFutureTier)).not.toThrow();
+	});
+
+	it.each([
+		["attention is not an object", "must be an object", { attention: "cheap" }],
+		[
+			"attention version is missing",
+			"non-empty version",
+			{ attention: { currency: "USDC", pricing: {} } },
+		],
+		[
+			"attention currency is missing",
+			"non-empty currency",
+			{ attention: { version: "1.0", pricing: {} } },
+		],
+		[
+			"attention pricing is missing",
+			"pricing object",
+			{ attention: { version: "1.0", currency: "USDC" } },
+		],
+		[
+			"a pricing amount is not a string",
+			"decimal amount string",
+			{ attention: { version: "1.0", currency: "USDC", pricing: { standard: 0.001 } } },
+		],
+		[
+			"a pricing amount is not decimal",
+			"decimal amount string",
+			{ attention: { version: "1.0", currency: "USDC", pricing: { standard: "1,50" } } },
+		],
+		[
+			"a pricing amount has more than 6 decimals",
+			"decimal amount string",
+			{ attention: { version: "1.0", currency: "USDC", pricing: { standard: "0.1234567" } } },
+		],
+	])("should throw when %s", (_, expectedMessage, tapOverride) => {
+		const invalid = {
+			...VALID_REGISTRATION_FILE,
+			trustedAgentProtocol: {
+				...VALID_REGISTRATION_FILE.trustedAgentProtocol,
+				...tapOverride,
+			},
+		};
+		expect(() => validateRegistrationFile(invalid)).toThrow(expectedMessage);
+	});
+
+	it("should tolerate unknown extra fields at every level (backward compat)", () => {
+		const withExtras = {
+			...VALID_REGISTRATION_FILE,
+			someFutureTopLevelField: { nested: true },
+			trustedAgentProtocol: {
+				...VALID_REGISTRATION_FILE.trustedAgentProtocol,
+				someFutureProtocolField: "ignored",
+			},
+		};
+		expect(() => validateRegistrationFile(withExtras)).not.toThrow();
+	});
+
 	it("should accept a registration file with both a2a and xmtp services", () => {
 		const result = validateRegistrationFile(VALID_MIXED_REGISTRATION_FILE);
 		expect(result.services).toHaveLength(2);

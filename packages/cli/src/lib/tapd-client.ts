@@ -8,6 +8,7 @@ import type {
 	TapCancelMeetingResult,
 	TapConnectResult,
 	TapPendingRequest,
+	TapPostageTopupResult,
 	TapPublishGrantSetResult,
 	TapRequestFundsInput,
 	TapRequestFundsResult,
@@ -243,6 +244,7 @@ export class TapdClient {
 		peer: string;
 		text: string;
 		scope?: string;
+		priority?: boolean;
 	}): Promise<TapSendMessageResult> {
 		return this.post<TapSendMessageResult>("/api/messages", input);
 	}
@@ -253,6 +255,14 @@ export class TapdClient {
 
 	transfer(input: TransferRequestBody): Promise<TransferResultBody> {
 		return this.post<TransferResultBody>("/api/transfers", input);
+	}
+
+	postageTopup(input: {
+		peer: string;
+		amount: string;
+		waitMs?: number;
+	}): Promise<TapPostageTopupResult> {
+		return this.post<TapPostageTopupResult>("/api/postage/topup", input);
 	}
 
 	createInvite(input: CreateInviteRequestBody = {}): Promise<CreateInviteResultBody> {

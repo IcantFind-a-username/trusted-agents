@@ -6,6 +6,7 @@ export type {
 	DataPart,
 	MessagePart,
 	TrustedAgentMetadata,
+	PostageStamp,
 	Message,
 	AgentIdentifier,
 	ConnectionRequestParams,

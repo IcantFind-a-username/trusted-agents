@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TapEvent } from "trusted-agents-core";
@@ -55,7 +55,11 @@ describe("Daemon → NotificationQueue wiring", () => {
 				dataDir,
 			}),
 			buildService: async () => service as never,
-			trustStore: { getContacts: async () => [], getContact: async () => null } as never,
+			trustStore: {
+				getContacts: async () => [],
+				getContact: async () => null,
+				findByAgentId: async () => null,
+			} as never,
 			conversationLogger: {
 				logMessage: async () => {},
 				getConversation: async () => null,
@@ -160,5 +164,118 @@ describe("Daemon → NotificationQueue wiring", () => {
 			})
 		).json()) as { notifications: unknown[] };
 		expect(response.notifications.length).toBe(0);
+	});
+
+	function messageEvent(seq: number, connectionId: string, text: string): TapEvent {
+		return {
+			id: `evt-msg-${seq}`,
+			occurredAt: `2026-04-13T00:00:0${seq % 10}.000Z`,
+			identityAgentId: 42,
+			type: "message.received",
+			conversationId: `conv-${connectionId}`,
+			peer: {
+				connectionId,
+				peerAgentId: 99,
+				peerName: "Bob",
+				peerChain: "eip155:8453",
+			},
+			messageId: `m-${seq}`,
+			text,
+			scope: "general-chat",
+		};
+	}
+
+	async function drain(): Promise<{
+		notifications: Array<{
+			oneLiner: string;
+			type: string;
+			count?: number;
+			coalesceKey?: string;
+			data?: Record<string, unknown>;
+		}>;
+	}> {
+		const response = await fetch(`http://127.0.0.1:${port}/api/notifications/drain`, {
+			headers: { Authorization: `Bearer ${token}` },
+		});
+		expect(response.status).toBe(200);
+		return (await response.json()) as {
+			notifications: Array<{
+				oneLiner: string;
+				type: string;
+				count?: number;
+				coalesceKey?: string;
+				data?: Record<string, unknown>;
+			}>;
+		};
+	}
+
+	it("coalesces same-connection messages into one counted notification over HTTP", async () => {
+		service.hooks.onTypedEvent?.(messageEvent(1, "conn-1", "first"));
+		service.hooks.onTypedEvent?.(messageEvent(2, "conn-1", "second"));
+		service.hooks.onTypedEvent?.(messageEvent(3, "conn-1", "third"));
+
+		const body = await drain();
+		expect(body.notifications).toHaveLength(1);
+		expect(body.notifications[0]?.count).toBe(3);
+		expect(body.notifications[0]?.oneLiner).toContain("third");
+		expect(body.notifications[0]?.coalesceKey).toBe("msg:conn-1");
+		expect(body.notifications[0]?.data?.peerName).toBe("Bob");
+	});
+
+	it("does not leak counts across drains", async () => {
+		service.hooks.onTypedEvent?.(messageEvent(1, "conn-1", "first"));
+		service.hooks.onTypedEvent?.(messageEvent(2, "conn-1", "second"));
+		expect((await drain()).notifications[0]?.count).toBe(2);
+
+		service.hooks.onTypedEvent?.(messageEvent(3, "conn-1", "third"));
+		const second = await drain();
+		expect(second.notifications).toHaveLength(1);
+		expect(second.notifications[0]?.count).toBeUndefined();
+	});
+
+	it("keeps distinct peers and pending actions as separate wire entries", async () => {
+		service.hooks.onTypedEvent?.(messageEvent(1, "conn-1", "a1"));
+		service.hooks.onTypedEvent?.(messageEvent(2, "conn-1", "a2"));
+		service.hooks.onTypedEvent?.({
+			id: "evt-pending",
+			occurredAt: "2026-04-13T00:01:00.000Z",
+			identityAgentId: 42,
+			type: "action.pending",
+			conversationId: "conv-1",
+			requestId: "req-42",
+			kind: "transfer",
+			payload: {},
+			awaitingDecision: true,
+		});
+		service.hooks.onTypedEvent?.(messageEvent(3, "conn-2", "b1"));
+		service.hooks.onTypedEvent?.(messageEvent(4, "conn-2", "b2"));
+
+		const body = await drain();
+		expect(body.notifications).toHaveLength(3);
+		const pending = body.notifications.find((n) => n.type === "escalation");
+		expect(pending?.oneLiner).toContain("req-42");
+		expect(body.notifications.filter((n) => n.count === 2)).toHaveLength(2);
+	});
+
+	it("records drain accounting into <dataDir>/attention-ledger.json", async () => {
+		service.hooks.onTypedEvent?.(messageEvent(1, "conn-1", "first"));
+		service.hooks.onTypedEvent?.(messageEvent(2, "conn-1", "second"));
+		await drain();
+
+		const raw = JSON.parse(await readFile(join(dataDir, "attention-ledger.json"), "utf-8")) as {
+			version: number;
+			identity?: { chain: string; agentId: number };
+			days: Record<
+				string,
+				{ peers: Record<string, { notificationsRendered: number; tokensInjected: number }> }
+			>;
+		};
+		expect(raw.version).toBe(1);
+		expect(raw.identity).toEqual({ chain: "eip155:8453", agentId: 42 });
+		const days = Object.values(raw.days);
+		expect(days).toHaveLength(1);
+		const peer = days[0]?.peers["eip155:8453#99"];
+		expect(peer?.notificationsRendered).toBe(1);
+		expect(peer?.tokensInjected).toBeGreaterThan(0);
 	});
 });

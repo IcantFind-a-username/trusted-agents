@@ -26,6 +26,18 @@ export interface OwsConfig {
 	apiKey: string;
 }
 
+export interface AttentionConfig {
+	/**
+	 * When true, inbound message/send from a sender holding no active
+	 * "message/send" grant is rejected with JSON-RPC -32050 carrying a
+	 * machine-readable quote. Off by default — the payment rail that makes
+	 * paying the quote possible ships separately.
+	 */
+	enforce?: boolean;
+	/** Advertised price list; tier name → decimal currency string (USDC). */
+	pricing?: Record<string, string>;
+}
+
 export interface TrustedAgentsConfig {
 	agentId: number;
 	chain: string;
@@ -39,4 +51,5 @@ export interface TrustedAgentsConfig {
 	xmtpDbEncryptionKey?: `0x${string}`;
 	execution?: ExecutionConfig;
 	ipfs?: IpfsConfig;
+	attention?: AttentionConfig;
 }

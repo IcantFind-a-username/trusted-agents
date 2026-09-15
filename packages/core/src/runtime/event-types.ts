@@ -20,6 +20,19 @@ export interface TapPeerRef {
 	peerChain: string;
 }
 
+/**
+ * Postage actually charged for an inbound message by attention
+ * enforcement. Only present when a stamp was debited: grant holders ride
+ * free (no field), and with enforcement off nothing is charged. A
+ * "priority" tier means the stamp covered the receiver's advertised
+ * priority price — hosts treat that as an escalation that may wake the
+ * agent and widen the rendered excerpt.
+ */
+export interface PaidPostageRef {
+	tier: "standard" | "priority";
+	cost: string;
+}
+
 export interface MessageReceivedEvent extends TapEventEnvelope {
 	type: "message.received";
 	conversationId: string;
@@ -27,6 +40,7 @@ export interface MessageReceivedEvent extends TapEventEnvelope {
 	messageId: string;
 	text: string;
 	scope: string;
+	postage?: PaidPostageRef;
 }
 
 export interface MessageSentEvent extends TapEventEnvelope {

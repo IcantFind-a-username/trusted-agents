@@ -5,6 +5,9 @@ export const PHASES = {
 	PERMISSIONS: 3,
 	MESSAGING: 4,
 	TRANSFERS: 5,
+	ATTENTION: 6,
+	POSTAGE: 7,
+	WAKE_QUOTA: 8,
 } as const;
 
 export const SCENARIOS = {
@@ -59,4 +62,71 @@ export const SCENARIOS = {
 	SYNC_REJECTION_A: { name: "Sync rejection (Agent A auto-rejects)", phase: PHASES.TRANSFERS },
 	SYNC_REJECTION_RESULT_B: { name: "Sync rejection result (Agent B)", phase: PHASES.TRANSFERS },
 	VERIFY_BALANCE_UNCHANGED: { name: "Verify Agent B balance unchanged", phase: PHASES.TRANSFERS },
+
+	// Phase 6: Attention pricing. Mock-only for now: enforcement is off by
+	// default so live behavior is unchanged, and the live assertions would be
+	// negative ones ("B never logged the message") that are timing-flaky over
+	// real XMTP. Mirror into e2e-live once a funded run can validate them.
+	ATTENTION_DRY_RUN: {
+		name: "Preview message cost with --dry-run (Agent A)",
+		phase: PHASES.ATTENTION,
+	},
+	ATTENTION_ENFORCE_ON: {
+		name: "Enable attention enforcement (Agent B)",
+		phase: PHASES.ATTENTION,
+	},
+	ATTENTION_REJECTED: {
+		name: "Send without grant rejected with quote (A to B)",
+		phase: PHASES.ATTENTION,
+	},
+	ATTENTION_GRANT_EXEMPT: {
+		name: "message/send grant exempts sender (A to B delivers)",
+		phase: PHASES.ATTENTION,
+	},
+
+	// Phase 7: Prepaid postage. Mock-only for the same reasons as Phase 6:
+	// enforcement (and therefore stamping) is opt-in, and the exhaustion
+	// scenario relies on the negative "B never logged it" assertion that is
+	// timing-flaky over real XMTP. Mirror into e2e-live with a funded run.
+	POSTAGE_REVOKE_EXEMPTION: {
+		name: "Revoke message/send grant so postage applies again (Agent B)",
+		phase: PHASES.POSTAGE,
+	},
+	POSTAGE_TOPUP: {
+		name: "Postage topup buys prepaid credit with a signed certificate (A at B)",
+		phase: PHASES.POSTAGE,
+	},
+	POSTAGE_STAMPED_SEND: {
+		name: "Auto-stamped message from un-granted sender delivers and debits (A to B)",
+		phase: PHASES.POSTAGE,
+	},
+	POSTAGE_EXHAUSTED: {
+		name: "Exhausted postage credit is rejected with a top-up quote (A to B)",
+		phase: PHASES.POSTAGE,
+	},
+	POSTAGE_BALANCE: {
+		name: "Postage balance shows held and issued credits (both agents)",
+		phase: PHASES.POSTAGE,
+	},
+
+	// Phase 8: Paid wake-ups + notification quotas. Mock-only like Phases
+	// 6/7: both mechanisms are opt-in and the assertions inspect the
+	// receiver's drained notification batch, which needs the in-process
+	// daemon's HTTP surface.
+	WAKE_PRICING_ON: {
+		name: "Publish a priority attention price (Agent B)",
+		phase: PHASES.WAKE_QUOTA,
+	},
+	WAKE_PRIORITY_STAMP: {
+		name: "Priority stamp escalates with a 400-char excerpt (A to B)",
+		phase: PHASES.WAKE_QUOTA,
+	},
+	QUOTA_GRANT_FOLD: {
+		name: "Over-quota grant holder's chatter folds to one summary line (A at B)",
+		phase: PHASES.WAKE_QUOTA,
+	},
+	WAKE_GRANT_HOLDER_PRIORITY: {
+		name: "Grant holder's priority stamp still buys the wake-up (A to B)",
+		phase: PHASES.WAKE_QUOTA,
+	},
 } as const;

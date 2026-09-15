@@ -7,6 +7,14 @@ const ESCALATION_EVENT_TYPES = new Set(["action.pending", "connection.requested"
 const RECONNECT_DELAY_MS = 1000;
 const TOKEN_FILE_NAME = ".tapd-token";
 
+/** A message.received event whose stamp paid the priority (wake-up) tier. */
+function isPriorityMessagePayload(payload: unknown): boolean {
+	if (typeof payload !== "object" || payload === null) return false;
+	const postage = (payload as { postage?: unknown }).postage;
+	if (typeof postage !== "object" || postage === null) return false;
+	return (postage as { tier?: unknown }).tier === "priority";
+}
+
 export interface EscalationEvent {
 	type: string;
 	payload: unknown;
@@ -141,7 +149,10 @@ export class EscalationWatcher {
 			}
 		}
 		if (!eventType || !dataLine) return;
-		if (!ESCALATION_EVENT_TYPES.has(eventType)) return;
+		const alwaysEscalates = ESCALATION_EVENT_TYPES.has(eventType);
+		// message.received escalates only when the sender paid the priority
+		// attention tier — that stamp bought the wake-up.
+		if (!alwaysEscalates && eventType !== "message.received") return;
 
 		let payload: unknown;
 		try {
@@ -149,6 +160,7 @@ export class EscalationWatcher {
 		} catch {
 			return;
 		}
+		if (!alwaysEscalates && !isPriorityMessagePayload(payload)) return;
 		try {
 			this.options.onEscalation({ type: eventType, payload });
 		} catch (error: unknown) {

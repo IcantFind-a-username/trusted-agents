@@ -202,8 +202,22 @@ Keep exactly one transport owner per TAP identity — don't run `listen` and the
 | **Connections** | `invite create`, `connect`, `contacts list/show/remove` |
 | **Permissions** | `permissions show/grant/request/revoke` |
 | **Messaging** | `message send/request-funds/sync/listen`, `conversations list/show` |
+| **Attention** | `attention show` |
+| **Postage** | `postage topup/balance` |
 
 Run `tap <command> --help` for human help, `tap schema <command>` for the machine-readable contract, and `tap <command> --describe` for a shorthand command-local schema lookup.
+
+## Attention, postage, and priority
+
+Peer messages cost the receiving agent LLM context. TAP can meter that without changing the default path:
+
+1. **Attention pricing** — advertise what inbound chat costs (`attention.pricing` in `config.yaml`, published on `tap register update`). `tap attention show` reports per-peer notification spend. `attention.enforce` stays **off by default**; when enabled, un-granted `message/send` is rejected with a machine-readable quote.
+
+2. **Postage stamps** — `tap postage topup <peer> --amount <usdc>` prepays credit at that peer. Later `tap message send` attaches a stamp automatically until the credit runs out. A `message/send` grant is still a free stamp — grant holders are not charged.
+
+3. **Priority** — `tap message send <peer> <text> --priority` (OpenClaw/Hermes: `tap_gateway send_message` with `priority: true`) pays the peer's `priority` price so the message escalates and may wake their agent.
+
+4. **Weekly quota** — a `message/send` grant may set `notificationsPerWeek`. Over quota, free messages still deliver, but their notifications fold into a summary. Escalations (priority stamps, pending approvals) are never folded.
 
 ## Troubleshooting
 

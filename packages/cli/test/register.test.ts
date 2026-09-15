@@ -1,7 +1,7 @@
 import { validateRegistrationFile } from "trusted-agents-core";
 import type { RegistrationFile } from "trusted-agents-core";
 import { describe, expect, it } from "vitest";
-import { buildUpdatedRegistrationFile } from "../src/commands/register.js";
+import { buildAttentionMetadata, buildUpdatedRegistrationFile } from "../src/commands/register.js";
 
 describe("register — registration file construction", () => {
 	const agentAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as const;
@@ -136,5 +136,92 @@ describe("register — registration file construction", () => {
 		expect(updated.trustedAgentProtocol.capabilities).toEqual(["scheduling", "calendar"]);
 		expect(updated.trustedAgentProtocol.execution?.mode).toBe("eip7702");
 		expect(() => validateRegistrationFile(updated)).not.toThrow();
+	});
+
+	it("preserves an existing attention block on partial update", () => {
+		const current: RegistrationFile = {
+			type: "eip-8004-registration-v1",
+			name: "Priced Agent",
+			description: "Advertises attention pricing",
+			services: [{ name: "xmtp", endpoint: agentAddress }],
+			trustedAgentProtocol: {
+				version: "1.0",
+				agentAddress,
+				capabilities: ["chat"],
+				attention: {
+					version: "1.0",
+					currency: "USDC",
+					pricing: { standard: "0.001" },
+				},
+			},
+		};
+
+		const updated = buildUpdatedRegistrationFile(current, agentAddress, undefined, {
+			description: "Renamed but still priced",
+		});
+
+		expect(updated.trustedAgentProtocol.attention?.pricing.standard).toBe("0.001");
+		expect(() => validateRegistrationFile(updated)).not.toThrow();
+	});
+
+	it("replaces the attention block when an update provides one", () => {
+		const current: RegistrationFile = {
+			type: "eip-8004-registration-v1",
+			name: "Priced Agent",
+			description: "Advertises attention pricing",
+			services: [{ name: "xmtp", endpoint: agentAddress }],
+			trustedAgentProtocol: {
+				version: "1.0",
+				agentAddress,
+				capabilities: ["chat"],
+				attention: {
+					version: "1.0",
+					currency: "USDC",
+					pricing: { standard: "0.001" },
+				},
+			},
+		};
+
+		const updated = buildUpdatedRegistrationFile(current, agentAddress, undefined, {
+			attention: {
+				version: "1.0",
+				currency: "USDC",
+				chain: "eip155:8453",
+				pricing: { grantHolder: "0", standard: "0.002", priority: "0.02" },
+			},
+		});
+
+		expect(updated.trustedAgentProtocol.attention?.pricing).toEqual({
+			grantHolder: "0",
+			standard: "0.002",
+			priority: "0.02",
+		});
+		expect(() => validateRegistrationFile(updated)).not.toThrow();
+	});
+});
+
+describe("register — attention metadata from config", () => {
+	it("derives the block from config.attention.pricing", () => {
+		expect(
+			buildAttentionMetadata({
+				chain: "eip155:8453",
+				attention: { pricing: { grantHolder: "0", standard: "0.001" } },
+			}),
+		).toEqual({
+			version: "1.0",
+			currency: "USDC",
+			chain: "eip155:8453",
+			pricing: { grantHolder: "0", standard: "0.001" },
+		});
+	});
+
+	it("returns undefined when no pricing is configured", () => {
+		expect(buildAttentionMetadata({ chain: "eip155:8453" })).toBeUndefined();
+		expect(
+			buildAttentionMetadata({ chain: "eip155:8453", attention: { enforce: true } }),
+		).toBeUndefined();
+		expect(
+			buildAttentionMetadata({ chain: "eip155:8453", attention: { pricing: {} } }),
+		).toBeUndefined();
 	});
 });

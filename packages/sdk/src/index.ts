@@ -39,6 +39,8 @@ export type {
 	TapRequestGrantSetResult,
 	TapRequestFundsInput,
 	TapRequestFundsResult,
+	TapPostageTopupInput,
+	TapPostageTopupResult,
 	TapRequestMeetingInput,
 	TapRequestMeetingResult,
 	TapCancelMeetingResult,

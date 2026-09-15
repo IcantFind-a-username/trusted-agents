@@ -84,6 +84,42 @@ describe("AgentResolver", () => {
 		fetchMock.mockRestore();
 	});
 
+	it("should surface attention pricing from the registration file", async () => {
+		const mockClient = createMockPublicClient({
+			tokenURI: "https://example.com/agent/1/registration.json",
+			ownerAddress: ALICE.address,
+		});
+
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					...VALID_REGISTRATION_FILE,
+					trustedAgentProtocol: {
+						...VALID_REGISTRATION_FILE.trustedAgentProtocol,
+						attention: {
+							version: "1.0",
+							currency: "USDC",
+							chain: "eip155:8453",
+							pricing: { grantHolder: "0", standard: "0.001" },
+						},
+					},
+				}),
+				{
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		);
+
+		const resolver = new AgentResolver(chains, () => mockClient);
+		const result = await resolver.resolve(1, "eip155:1");
+
+		expect(result.attention?.currency).toBe("USDC");
+		expect(result.attention?.pricing).toEqual({ grantHolder: "0", standard: "0.001" });
+
+		fetchMock.mockRestore();
+	});
+
 	it.each([
 		["XMTP transport", 2, VALID_XMTP_REGISTRATION_FILE],
 		["mixed services (XMTP always used)", 3, VALID_MIXED_REGISTRATION_FILE],

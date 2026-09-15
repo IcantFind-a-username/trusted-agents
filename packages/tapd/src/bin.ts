@@ -61,6 +61,17 @@ async function main(): Promise<void> {
 				log: (level, message) => {
 					process.stdout.write(`[tapd:${level}] ${message}\n`);
 				},
+				// Postage topups pay through the service's transfer hook (the
+				// route-level executor below only serves POST /api/transfers).
+				// Same per-request-chain signer rationale as that executor.
+				executeTransfer: async (serviceConfig, request) => {
+					const chainSigner = new OwsSigningProvider(
+						trustedAgentsConfig.ows.wallet,
+						request.chain,
+						trustedAgentsConfig.ows.apiKey,
+					);
+					return await executeOnchainTransfer(serviceConfig, chainSigner, request);
+				},
 			},
 		});
 	};

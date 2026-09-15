@@ -3,13 +3,14 @@
   "private": true,
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "bun run --cwd packages/core build && bun run --cwd packages/app-transfer build && bun run --cwd packages/app-scheduling build && bun run --cwd packages/sdk build && bun run --cwd packages/ui build && bun run --cwd packages/tapd build && bun run --cwd packages/cli build && bun run --cwd packages/openclaw-plugin build",
+    "build": "bun run --cwd packages/core build && bun run --cwd packages/app-transfer build && bun run --cwd packages/app-scheduling build && bun run --cwd packages/app-postage build && bun run --cwd packages/sdk build && bun run --cwd packages/ui build && bun run --cwd packages/tapd build && bun run --cwd packages/cli build && bun run --cwd packages/openclaw-plugin build",
     "test": "vitest run",
     "test:xmtp": "XMTP_INTEGRATION=true vitest run packages/core/test/integration/xmtp-transport.test.ts",
     "test:watch": "vitest",
-    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/core build && bun run --cwd packages/app-transfer typecheck && bun run --cwd packages/app-scheduling typecheck && bun run --cwd packages/sdk typecheck && bun run --cwd packages/sdk build && bun run --cwd packages/tapd typecheck && bun run --cwd packages/tapd build && bun run --cwd packages/ui typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/openclaw-plugin typecheck",
+    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/core build && bun run --cwd packages/app-transfer typecheck && bun run --cwd packages/app-scheduling typecheck && bun run --cwd packages/app-postage typecheck && bun run --cwd packages/sdk typecheck && bun run --cwd packages/sdk build && bun run --cwd packages/tapd typecheck && bun run --cwd packages/tapd build && bun run --cwd packages/ui typecheck && bun run --cwd packages/cli typecheck && bun run --cwd packages/openclaw-plugin typecheck",
     "release:check": "bun run lint && bun run typecheck && bun run build && bun run test && bun run verify:release",
     "verify:release": "node scripts/verify-release-packages.mjs",
+    "demo:notifications": "bun scripts/demo-notification-flood.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write ."

@@ -18,12 +18,14 @@ When this file conflicts with code, code wins.
 	- `packages/sdk`: Public SDK entry point for building on TAP. Owns `createTapRuntime`, app install/remove, and the public API surface.
 	- `packages/app-transfer`: Transfer request handling as a TAP app. Owns grant matching, payload parsing, transfer execution handler.
 	- `packages/app-scheduling`: Scheduling request handling as a TAP app. Owns scheduling types, grant matching, calendar integration, scheduling handler.
+	- `packages/app-postage`: Prepaid postage as a TAP app. Owns the standalone `postageApp` (`postage/topup`, `postage/balance`); handlers and the postage ledger live in `packages/core`.
 - Dependency direction:
 	- `cli -> core` (and will migrate to `sdk -> core`)
 	- `openclaw-plugin -> core` (and will migrate to `sdk -> core`)
 	- `sdk -> core`
 	- `app-transfer -> core` (types only)
 	- `app-scheduling -> core` (types only)
+	- `app-postage -> core`
 	- `core` has no internal workspace dependencies
 
 ## Package Responsibilities
@@ -39,6 +41,8 @@ When this file conflicts with code, code wins.
 	- request journal / dedupe / reconciliation state
 	- transport owner lock
 	- `TapMessagingService`
+	- attention ledger (`src/attention`)
+	- postage credit ledger, stamps, and certificates (`src/postage`)
 - If behavior differs between hosts, start by checking whether it should really live here.
 
 ### `packages/cli`
@@ -78,6 +82,13 @@ When this file conflicts with code, code wins.
 	- calendar provider interface
 	- scheduling handler
 	- `buildSchedulingPayload` helper
+
+### `packages/app-postage`
+- Prepaid postage as a TAP app. The runtime registers postage as a built-in; this package is the standalone, manifest-installable form.
+- Owns:
+	- `postageApp` (`postage/topup`, `postage/balance`)
+	- re-exports of core postage types/helpers (`buildPostageTopupPayload`, `buildPostageBalancePayload`, certificate sign/verify)
+- Handlers and the postage ledger live in `packages/core` (`src/postage/*`). State is `<dataDir>/apps/postage/state.json`, reached through `ctx.extensions.postage` (not `ctx.storage`).
 
 ### `packages/openclaw-plugin`
 - OpenClaw-specific host adapter. **Thin plugin, fat CLI** — see rule below.
@@ -150,11 +161,12 @@ Installation expectations:
 3. `packages/core/src/transport/interface.ts` then `transport/xmtp.ts`
 4. `packages/core/src/trust/*` and `conversation/*` (state persistence)
 5. `packages/core/src/runtime/*` (`TapMessagingService`, request journal, transport owner lock)
-6. `packages/core/src/app/*` (app types, registry, manifest, storage)
-7. `packages/cli/src/lib/context.ts`, `lib/cli-runtime.ts`, and `commands/*` (CLI host adapter)
-8. `packages/openclaw-plugin/src/*` (Gateway host adapter)
-9. `packages/sdk/src/*` (public SDK API)
-10. `packages/app-transfer/src/*` and `packages/app-scheduling/src/*` (built-in apps)
+6. `packages/core/src/attention/*` and `src/postage/*` (attention ledger, postage credits/stamps)
+7. `packages/core/src/app/*` (app types, registry, manifest, storage)
+8. `packages/cli/src/lib/context.ts`, `lib/cli-runtime.ts`, and `commands/*` (CLI host adapter)
+9. `packages/openclaw-plugin/src/*` (Gateway host adapter)
+10. `packages/sdk/src/*` (public SDK API)
+11. `packages/app-transfer/src/*`, `packages/app-scheduling/src/*`, and `packages/app-postage/src/*` (built-in apps)
 
 ## Core Abstractions To Preserve
 
@@ -224,6 +236,7 @@ File: `packages/core/src/identity/registration-file.ts`
 - Non-XMTP services must use `https:` URLs
 - `trustedAgentProtocol.agentAddress` must be a valid Ethereum address
 - `xmtp.endpoint` must match `trustedAgentProtocol.agentAddress` (case-insensitive)
+- `trustedAgentProtocol.attention` is optional (absent = no pricing); when present it needs a non-empty `version` and `currency` and a `pricing` object whose values are decimal amount strings (≤6 decimals). Tier names are open — validate values, not names.
 
 ### URI safety rules during registration fetch
 File: `packages/core/src/identity/registration-file.ts`
@@ -297,9 +310,11 @@ File: `packages/sdk/src/orchestrator.ts`
 ├── request-journal.json     # Single source of truth for in-flight and completed wire requests + queued command intents
 ├── ipfs-cache.json          # Content hash → CID (avoids re-upload)
 ├── apps.json                # installed apps manifest
+├── attention-ledger.json    # per-peer notification attention spend
 ├── apps/                    # app-scoped state
 │   ├── transfer/state.json
-│   └── scheduling/state.json
+│   ├── scheduling/state.json
+│   └── postage/state.json
 ├── conversations.db         # SQLite store for conversation logs (v2, replaces conversations/*.json)
 ├── conversations.bak/       # Pre-migration JSON backups (safe to delete after a release)
 └── xmtp/<inboxId>.db3       # XMTP client DB (encrypted)
@@ -412,7 +427,7 @@ File: `packages/sdk/src/orchestrator.ts`
 ### Adding/changing a TAP app or the app interface
 - Update `packages/core/src/app/types.ts` for interface changes
 - If changing `TapActionContext`, update `packages/core/src/app/context.ts` (`buildActionContext`)
-- Test with built-in apps (`app-transfer`, `app-scheduling`) as they validate the interface
+- Test with built-in apps (`app-transfer`, `app-scheduling`, `app-postage`) as they validate the interface
 - Update the skill file if adding new CLI commands
 
 ### Changing TAP skill/reference semantics
@@ -431,6 +446,7 @@ XMTP_INTEGRATION=true bun run test:xmtp
 # Test a specific app package:
 bun run test -- packages/app-transfer/test/
 bun run test -- packages/app-scheduling/test/
+bun run test -- packages/app-postage/test/
 bun run test -- packages/sdk/test/
 ```
 Note: OWS (Open Wallet Service) must be installed and accessible for tests that exercise signing or wallet operations. Tests that mock `SigningProvider` do not require a live OWS instance.

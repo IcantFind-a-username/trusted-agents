@@ -18,6 +18,7 @@ import type {
 	ExecutionPreview,
 	IpfsUploadProvider,
 	RegistrationFile,
+	RegistrationFileAttention,
 	RegistrationFileExecution,
 	SigningProvider,
 	TrustedAgentsConfig,
@@ -104,6 +105,7 @@ function buildRegistrationFile(
 	capabilities: string[],
 	agentAddress: `0x${string}`,
 	execution?: RegistrationFileExecution,
+	attention?: RegistrationFileAttention,
 ): RegistrationFile {
 	return {
 		type: "eip-8004-registration-v1",
@@ -115,8 +117,24 @@ function buildRegistrationFile(
 			agentAddress,
 			capabilities,
 			execution,
+			attention,
 		},
 	};
+}
+
+/**
+ * The advertised attention price list, derived from `config.attention.pricing`
+ * in config.yaml. Undefined (no block published) when no pricing is
+ * configured — enforcement and advertisement are independent switches.
+ */
+export function buildAttentionMetadata(
+	config: Pick<TrustedAgentsConfig, "chain" | "attention">,
+): RegistrationFileAttention | undefined {
+	const pricing = config.attention?.pricing;
+	if (!pricing || Object.keys(pricing).length === 0) {
+		return undefined;
+	}
+	return { version: "1.0", currency: "USDC", chain: config.chain, pricing };
 }
 
 export function buildUpdatedRegistrationFile(
@@ -127,6 +145,7 @@ export function buildUpdatedRegistrationFile(
 		name?: string;
 		description?: string;
 		capabilities?: string[];
+		attention?: RegistrationFileAttention;
 	},
 ): RegistrationFile {
 	return {
@@ -139,6 +158,7 @@ export function buildUpdatedRegistrationFile(
 			agentAddress,
 			capabilities: updates.capabilities ?? current.trustedAgentProtocol.capabilities,
 			execution: execution ?? current.trustedAgentProtocol.execution,
+			attention: updates.attention ?? current.trustedAgentProtocol.attention,
 		},
 	};
 }
@@ -574,6 +594,7 @@ export async function registerCommand(
 			parseCapabilities(cmdOpts.capabilities),
 			agentAddress,
 			buildExecutionMetadata(executionPreview),
+			buildAttentionMetadata(config),
 		);
 
 		// Validate before uploading
@@ -762,12 +783,16 @@ export async function registerUpdateCommand(
 			execution: RegistrationFileExecution | undefined,
 		): RegistrationFile => {
 			if (fullReplacement) {
+				// A full manifest replacement must not silently drop an already
+				// advertised price list: config wins, the fetched current file
+				// is the fallback.
 				return buildRegistrationFile(
 					cmdOpts.name!,
 					cmdOpts.description!,
 					parseCapabilities(cmdOpts.capabilities!),
 					agentAddress,
 					execution,
+					buildAttentionMetadata(config) ?? currentRegistrationFile?.trustedAgentProtocol.attention,
 				);
 			}
 			return buildUpdatedRegistrationFile(currentRegistrationFile!, agentAddress, execution, {
@@ -775,6 +800,7 @@ export async function registerUpdateCommand(
 				description: cmdOpts.description,
 				capabilities:
 					cmdOpts.capabilities !== undefined ? parseCapabilities(cmdOpts.capabilities) : undefined,
+				attention: buildAttentionMetadata(config),
 			});
 		};
 

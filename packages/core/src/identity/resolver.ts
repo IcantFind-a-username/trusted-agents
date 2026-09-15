@@ -65,6 +65,7 @@ export class AgentResolver implements IAgentResolver {
 			paymasterProvider: registrationFile.trustedAgentProtocol.execution?.paymaster,
 			endpoint: xmtpService.endpoint,
 			capabilities: registrationFile.trustedAgentProtocol.capabilities,
+			attention: registrationFile.trustedAgentProtocol.attention,
 			registrationFile,
 			resolvedAt: nowISO(),
 		};

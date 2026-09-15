@@ -49,10 +49,13 @@ Grant fields:
 - `general-chat`
 - `research`
 - `scheduling`
+- `message/send`
 - `transfer/request`
 - `permissions/request-grants`
 
 Use stable scope names and put budgets, assets, time windows, or policy details inside `constraints`.
+
+A `message/send` grant exempts the holder from attention enforcement (their messages deliver free). Its `constraints` may carry `notificationsPerWeek` (integer ≥ 0): a cap on rendered notification lines the holder's free messages may claim per trailing 7 UTC days — over quota, their notifications fold into a single summary line until the window rolls. Delivery is unaffected; only per-line attention is metered.
 
 ## Common Grant Templates
 
@@ -68,6 +71,18 @@ Use stable scope names and put budgets, assets, time windows, or policy details 
 [
   { "grantId": "<peer>-chat", "scope": "general-chat" },
   { "grantId": "<peer>-research", "scope": "research" }
+]
+```
+
+### Metered free messaging (attention quota)
+
+```json
+[
+  {
+    "grantId": "<peer>-metered-chat",
+    "scope": "message/send",
+    "constraints": { "notificationsPerWeek": 20 }
+  }
 ]
 ```
 

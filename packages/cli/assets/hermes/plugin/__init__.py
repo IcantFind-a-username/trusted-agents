@@ -65,6 +65,13 @@ TAP_GATEWAY_SCHEMA = {
                 "type": "boolean",
                 "description": "Set true for auto-generated replies to prevent reply loops.",
             },
+            "priority": {
+                "type": "boolean",
+                "description": (
+                    "Pay the peer's priority attention price so the message escalates "
+                    "and may wake their agent."
+                ),
+            },
             "note": {
                 "type": "string",
                 "description": "Optional operator note.",

@@ -76,10 +76,43 @@ export function validateConfig(
 		}
 	}
 
+	if (partial.attention !== undefined) {
+		if (partial.attention.enforce !== undefined && typeof partial.attention.enforce !== "boolean") {
+			throw new ConfigError("attention.enforce must be a boolean");
+		}
+		if (partial.attention.pricing !== undefined) {
+			for (const [tier, amount] of Object.entries(partial.attention.pricing)) {
+				if (typeof amount !== "string" || !/^\d+(\.\d{1,6})?$/.test(amount)) {
+					throw new ConfigError(`attention.pricing.${tier} must be a decimal amount string`);
+				}
+			}
+			// Tier names stay open, but the two tiers the runtime interprets
+			// must be ordered: with priority <= standard, every standard-paid
+			// message would classify as a priority wake-up and disable
+			// notification coalescing for all paid mail.
+			const { standard, priority } = partial.attention.pricing;
+			if (
+				typeof standard === "string" &&
+				typeof priority === "string" &&
+				parseDecimalMicros(priority) <= parseDecimalMicros(standard)
+			) {
+				throw new ConfigError(
+					`attention.pricing.priority (${priority}) must exceed attention.pricing.standard (${standard})`,
+				);
+			}
+		}
+	}
+
 	return {
 		...DEFAULT_CONFIG,
 		...partial,
 		dataDir: resolveDataDir(partial.dataDir ?? DEFAULT_CONFIG.dataDir),
 		chains: mergedChains,
 	};
+}
+
+/** Micro-units of a pricing string the tier regex already validated. */
+function parseDecimalMicros(amount: string): bigint {
+	const [whole, frac = ""] = amount.split(".");
+	return BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, "0"));
 }

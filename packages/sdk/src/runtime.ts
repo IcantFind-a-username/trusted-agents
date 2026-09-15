@@ -17,6 +17,8 @@ import {
 	type TapConnectResult,
 	TapMessagingService,
 	type TapPendingRequest,
+	type TapPostageTopupInput,
+	type TapPostageTopupResult,
 	type TapPublishGrantSetResult,
 	type TapRequestFundsInput,
 	type TapRequestFundsResult,
@@ -259,6 +261,12 @@ export class TapRuntime extends EventEmitter {
 		return await this.requireService().requestFunds(input);
 	}
 
+	// ── Postage ──
+
+	async topUpPostage(peerId: number, input: TapPostageTopupInput): Promise<TapPostageTopupResult> {
+		return await this.requireService().topUpPostage(String(peerId), input);
+	}
+
 	// ── Scheduling ──
 
 	async requestMeeting(input: TapRequestMeetingInput): Promise<TapRequestMeetingResult> {
@@ -353,6 +361,7 @@ export class TapRuntime extends EventEmitter {
 	}
 
 	private static readonly BUILTIN_APP_IDS = new Set([
+		"postage",
 		"tap-transfer",
 		"scheduling",
 		"tap-permissions",

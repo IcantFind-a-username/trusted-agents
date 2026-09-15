@@ -1,4 +1,5 @@
 export type {
+	RegistrationFileAttention,
 	RegistrationFileExecution,
 	RegistrationFile,
 	RegistrationFileService,

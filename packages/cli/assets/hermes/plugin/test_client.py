@@ -174,6 +174,20 @@ class HermesIdentityResolutionTests(unittest.TestCase):
         self.assertEqual(body["peer"], "bob")
         self.assertEqual(body["text"], "hi")
 
+    def test_send_message_forwards_priority_flag(self) -> None:
+        # Paid wake-ups: the priority flag must reach tapd's /api/messages
+        # body (and stay absent when the caller does not pass it).
+        self._write_config([{"name": "only", "dataDir": self._primary_dir}])
+        client.send_request(
+            "send_message",
+            {"peer": "bob", "text": "urgent", "priority": True, "identity": "only"},
+        )
+        body = self._captured[-1]["body"]
+        self.assertEqual(body["priority"], True)
+
+        client.send_request("send_message", {"peer": "bob", "text": "calm", "identity": "only"})
+        self.assertNotIn("priority", self._captured[-1]["body"])
+
 
 class HermesDrainAllIdentitiesTests(unittest.TestCase):
     """Tests for multi-identity notification drain (residual 1).
@@ -342,6 +356,139 @@ class HermesDrainAllIdentitiesTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("- INFO: no tag", result["context"])
         self.assertNotIn("[", result["context"].split("[TAP Notifications]")[1])
+
+
+class HermesNotificationFormattingTests(unittest.TestCase):
+    """Phase 1 rendering rules for ``format_notification_context``:
+    escalation-first stable ordering, ``(xN)`` count suffixes for coalesced
+    notifications, and a grouped overflow footer instead of a bare count."""
+
+    def test_count_suffix_only_when_count_at_least_two(self) -> None:
+        notifications = [
+            {"type": "info", "oneLiner": "New message from Bob: hi", "count": 3},
+            {"type": "info", "oneLiner": "counted once", "count": 1},
+            {"type": "info", "oneLiner": "no count field"},
+            {"type": "info", "oneLiner": "bogus count", "count": True},
+        ]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        context = result["context"]
+        self.assertIn("- INFO: New message from Bob: hi (x3)", context)
+        self.assertIn("- INFO: counted once\n", context)
+        self.assertIn("- INFO: no count field\n", context)
+        self.assertIn("- INFO: bogus count\n", context)
+        self.assertEqual(context.count("(x"), 1)
+
+    def test_escalations_render_first_with_identity_prefixes_preserved(self) -> None:
+        notifications = [
+            {"type": "info", "oneLiner": "one", "identity": "primary"},
+            {"type": "escalation", "oneLiner": "two", "identity": "secondary"},
+            {"type": "info", "oneLiner": "three", "identity": "primary"},
+            {"type": "escalation", "oneLiner": "four", "identity": "primary"},
+        ]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        lines = result["context"].split("\n")
+        self.assertEqual(
+            lines[1:5],
+            [
+                "- ESCALATION [secondary]: two",
+                "- ESCALATION [primary]: four",
+                "- INFO [primary]: one",
+                "- INFO [primary]: three",
+            ],
+        )
+
+    def test_meta_error_escalation_sorts_first_without_suffix(self) -> None:
+        notifications = [
+            {"type": "info", "oneLiner": "chatter"},
+            client._meta_error_notification("primary", "socket missing"),
+        ]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        lines = result["context"].split("\n")
+        self.assertTrue(lines[1].startswith("- ESCALATION:"))
+        self.assertIn("unable to reach tapd", lines[1])
+        self.assertNotIn("(x", lines[1])
+
+    def test_overflow_footer_groups_by_peer_and_type(self) -> None:
+        notifications = [
+            {"type": "info", "oneLiner": f"kept {i}"} for i in range(20)
+        ]
+        notifications.append(
+            {
+                "type": "info",
+                "oneLiner": "New message from Bob: hi",
+                "count": 12,
+                "data": {"peerName": "Bob", "peerAgentId": 7},
+            }
+        )
+        notifications.append(
+            {
+                "type": "info",
+                "oneLiner": "New message from peer: hm",
+                "data": {"peerAgentId": 9},
+            }
+        )
+        notifications.append({"type": "info", "oneLiner": "Connection established"})
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        lines = result["context"].split("\n")
+        self.assertEqual(
+            lines[-2],
+            "- SUMMARY: omitted: 12 messages from Bob, 1 message from agent #9, 1 info.",
+        )
+        self.assertNotIn("more TAP notifications omitted", result["context"])
+
+    def test_all_body_lines_are_escalations_when_they_exceed_the_cap(self) -> None:
+        notifications = [
+            {"type": "escalation", "oneLiner": f"esc {i}"} for i in range(25)
+        ] + [{"type": "info", "oneLiner": f"info {i}"} for i in range(5)]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        lines = result["context"].split("\n")
+        for line in lines[1:21]:
+            self.assertTrue(line.startswith("- ESCALATION:"), line)
+        self.assertEqual(lines[21], "- SUMMARY: omitted: 5 escalations, 5 info.")
+
+    def test_blank_one_liners_do_not_burn_rendered_slots(self) -> None:
+        notifications = [{"type": "info", "oneLiner": "   "}] + [
+            {"type": "info", "oneLiner": f"msg {i}"} for i in range(20)
+        ]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        lines = result["context"].split("\n")
+        # Blank entry dropped before the cap: all 20 real lines render and
+        # there is no SUMMARY footer (last line is the tap_gateway hint).
+        self.assertEqual(lines[1], "- INFO: msg 0")
+        self.assertEqual(len(lines), 22)
+        self.assertNotIn("- SUMMARY:", result["context"])
+
+    def test_all_blank_one_liners_returns_none(self) -> None:
+        notifications = [
+            {"type": "info", "oneLiner": ""},
+            {"type": "info", "oneLiner": "  "},
+        ]
+        self.assertIsNone(client.format_notification_context(notifications))
+
+    def test_legacy_input_renders_byte_identical_block(self) -> None:
+        notifications = [
+            {"type": "escalation", "oneLiner": "transfer needs approval"},
+            {"type": "info", "oneLiner": "Bob said hi"},
+        ]
+        result = client.format_notification_context(notifications)
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["context"],
+            "\n".join(
+                [
+                    "[TAP Notifications]",
+                    "- ESCALATION: transfer needs approval",
+                    "- INFO: Bob said hi",
+                    "Use tap_gateway for transport-active TAP actions inside Hermes.",
+                ]
+            ),
+        )
 
 
 class HermesLegacyDataDirTests(unittest.TestCase):

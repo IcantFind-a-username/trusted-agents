@@ -9,6 +9,7 @@ import type {
 	IAgentResolver,
 	ICalendarProvider,
 	ProtocolMessage,
+	RegistrationFileAttention,
 	ResolvedAgent,
 	TransportAck,
 	TransportHandlers,
@@ -24,6 +25,7 @@ interface TestAgentFixture {
 	name: string;
 	description: string;
 	capabilities: string[];
+	attention?: RegistrationFileAttention;
 }
 
 interface LoopbackEnvelope {
@@ -41,6 +43,7 @@ export function createResolvedAgentFixture(fixture: TestAgentFixture): ResolvedA
 		xmtpEndpoint: address,
 		endpoint: undefined,
 		capabilities: fixture.capabilities,
+		attention: fixture.attention,
 		registrationFile: {
 			type: "eip-8004-registration-v1",
 			name: fixture.name,
@@ -50,6 +53,7 @@ export function createResolvedAgentFixture(fixture: TestAgentFixture): ResolvedA
 				version: "1.0",
 				agentAddress: address,
 				capabilities: fixture.capabilities,
+				attention: fixture.attention,
 			},
 		},
 		resolvedAt: "2026-03-06T00:00:00.000Z",
@@ -207,6 +211,9 @@ export function installLoopbackRuntime(params: {
 	txHashPrefix: string;
 	calendarProvider?: ICalendarProvider;
 }): void {
+	// Real chains never reuse a transaction hash; the postage ledger relies
+	// on that (one credit per txHash), so the mock executor must too.
+	let txCounter = 0;
 	setCliRuntimeOverride(params.dataDir, {
 		createContext: () => ({
 			trustStore: new FileTrustStore(params.dataDir),
@@ -216,9 +223,15 @@ export function installLoopbackRuntime(params: {
 			...(params.calendarProvider ? { calendarProvider: params.calendarProvider } : {}),
 		}),
 		createTransport: (config) => new LoopbackTransport(params.network, config.agentId),
-		executeTransferAction: async () => ({
-			txHash: formatTxHash(params.txHashPrefix),
-		}),
+		executeTransferAction: async () => {
+			txCounter += 1;
+			// Fixed-width counter: formatTxHash right-pads with zeros, so a
+			// variable-width suffix would collide (counter 1 "a11…0" ===
+			// counter 16 "a110…0").
+			return {
+				txHash: formatTxHash(`${params.txHashPrefix}${txCounter.toString(16).padStart(8, "0")}`),
+			};
+		},
 	});
 }
 

@@ -115,6 +115,42 @@ export function validateRegistrationFile(data: unknown): RegistrationFile {
 		}
 	}
 
+	if (tap.attention !== undefined) {
+		if (typeof tap.attention !== "object" || tap.attention === null) {
+			throw new IdentityError("trustedAgentProtocol.attention must be an object");
+		}
+
+		const attention = tap.attention as Record<string, unknown>;
+		if (typeof attention.version !== "string" || attention.version.length === 0) {
+			throw new IdentityError("trustedAgentProtocol.attention must have a non-empty version");
+		}
+
+		if (typeof attention.currency !== "string" || attention.currency.length === 0) {
+			throw new IdentityError("trustedAgentProtocol.attention must have a non-empty currency");
+		}
+
+		if (
+			attention.chain !== undefined &&
+			(typeof attention.chain !== "string" || attention.chain.length === 0)
+		) {
+			throw new IdentityError("trustedAgentProtocol.attention.chain must be a non-empty string");
+		}
+
+		if (typeof attention.pricing !== "object" || attention.pricing === null) {
+			throw new IdentityError("trustedAgentProtocol.attention must have a pricing object");
+		}
+
+		// Tier names are open (additive for future tiers); only values are
+		// validated: decimal currency strings, USDC's 6 decimals max.
+		for (const [tier, amount] of Object.entries(attention.pricing as Record<string, unknown>)) {
+			if (typeof amount !== "string" || !/^\d+(\.\d{1,6})?$/.test(amount)) {
+				throw new IdentityError(
+					`trustedAgentProtocol.attention.pricing.${tier} must be a decimal amount string`,
+				);
+			}
+		}
+	}
+
 	const xmtpService = obj.services.find(
 		(service) =>
 			typeof service === "object" &&

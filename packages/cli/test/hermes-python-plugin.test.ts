@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { installTapHermesAssets } from "../src/hermes/install.js";
@@ -178,6 +179,56 @@ describe("Hermes Python TAP bridge (HTTP-over-Unix-socket)", () => {
 			'print(json.dumps(module.format_notification_context([{"type": "summary", "oneLiner": "   "}])))',
 		);
 		expect(JSON.parse(output)).toBeNull();
+	});
+
+	it("passes the full python unit test suite (test_client.py)", async () => {
+		// test_client.py is not otherwise wired into CI; running it here makes
+		// the whole python suite a gate of `bun run test`.
+		const suitePath = fileURLToPath(
+			new URL("../assets/hermes/plugin/test_client.py", import.meta.url),
+		);
+		await expect(
+			execFileAsync(PYTHON_BIN, ["-m", "unittest", suitePath], { encoding: "utf8" }),
+		).resolves.toBeDefined();
+	});
+
+	it("renders count suffixes and escalation-first ordering (smoke)", async () => {
+		const output = await runPluginExpression(
+			'print(json.dumps(module.format_notification_context([{"type": "info", "oneLiner": "New message from Bob: hi", "count": 3}, {"type": "escalation", "oneLiner": "transfer needs approval"}])))',
+		);
+		const result = JSON.parse(output) as { context?: string };
+		expect(result.context).toContain("(x3)");
+		const escalationIdx = result.context?.indexOf("- ESCALATION: transfer needs approval") ?? -1;
+		const infoIdx = result.context?.indexOf("- INFO: New message from Bob: hi (x3)") ?? -1;
+		expect(escalationIdx).toBeGreaterThan(-1);
+		expect(infoIdx).toBeGreaterThan(escalationIdx);
+	});
+
+	it("keeps coalescing fields intact through the drain pipeline", async () => {
+		const server = await startFakeTapdServer(join(dataDir, ".tapd.sock"), {
+			"GET /api/notifications/drain": {
+				notifications: [
+					{
+						type: "info",
+						oneLiner: "New message from Bob: latest",
+						count: 4,
+						coalesceKey: "msg:conn-1",
+						data: { peerName: "Bob", peerAgentId: 7 },
+					},
+					{ type: "escalation", oneLiner: "Pending transfer request (req-1)" },
+				],
+			},
+		});
+		try {
+			const output = await runPluginExpression(
+				"print(json.dumps(module.inject_tap_notifications()))",
+			);
+			const result = JSON.parse(output) as { context?: string };
+			expect(result.context).toContain("- ESCALATION: Pending transfer request (req-1)");
+			expect(result.context).toContain("- INFO: New message from Bob: latest (x4)");
+		} finally {
+			await server.stop();
+		}
 	});
 
 	// ── F4.1: per-request identity resolution ────────────────────────

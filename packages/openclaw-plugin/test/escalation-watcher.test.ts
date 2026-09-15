@@ -96,6 +96,40 @@ describe("EscalationWatcher", () => {
 		expect(events[0].type).toBe("connection.requested");
 	});
 
+	it("triggers onEscalation for message.received with a priority postage tier", async () => {
+		const handle = await startSseTapd();
+		const events: Array<{ type: string; payload: unknown }> = [];
+		const watcher = attach(
+			new EscalationWatcher({
+				socketPath: handle.socketPath,
+				onEscalation: (event) => events.push(event),
+			}),
+		);
+		watcher.start();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		// A standard-paid message must NOT wake the agent...
+		handle.publishSse({
+			id: "evt-p1",
+			type: "message.received",
+			data: { text: "cheap", postage: { tier: "standard", cost: "0.001" } },
+		});
+		// ...but a priority-paid one bought exactly that.
+		handle.publishSse({
+			id: "evt-p2",
+			type: "message.received",
+			data: { text: "urgent", postage: { tier: "priority", cost: "0.01" } },
+		});
+
+		await waitFor(() => events.length > 0);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual({
+			type: "message.received",
+			payload: { text: "urgent", postage: { tier: "priority", cost: "0.01" } },
+		});
+	});
+
 	it("does not trigger onEscalation for unrelated event types", async () => {
 		const handle = await startSseTapd();
 		const events: Array<{ type: string; payload: unknown }> = [];

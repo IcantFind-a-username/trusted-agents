@@ -1,10 +1,12 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type {
-	ICalendarProvider,
-	IConversationLogger,
-	ITrustStore,
-	TapMessagingService,
+import {
+	FileAttentionLedger,
+	type ICalendarProvider,
+	type IConversationLogger,
+	type ITrustStore,
+	type TapMessagingService,
+	toErrorMessage,
 } from "trusted-agents-core";
 import { generateAuthToken, persistAuthToken } from "./auth-token.js";
 import { TAPD_PORT_FILE, TAPD_TOKEN_FILE, type TapdConfig } from "./config.js";
@@ -26,6 +28,7 @@ import { createMeetingsRoutes } from "./http/routes/meetings.js";
 import { createMessagesRoute } from "./http/routes/messages.js";
 import { createNotificationsRoute } from "./http/routes/notifications.js";
 import { createPendingRoutes } from "./http/routes/pending.js";
+import { createPostageRoutes } from "./http/routes/postage.js";
 import { type TransferExecutor, createTransfersRoute } from "./http/routes/transfers.js";
 import { TapdHttpServer } from "./http/server.js";
 import { handleSseConnection } from "./http/sse.js";
@@ -75,6 +78,7 @@ export class Daemon {
 	private readonly options: DaemonOptions;
 	private readonly bus: EventBus;
 	private readonly notifications: NotificationQueue;
+	private readonly attentionLedger: FileAttentionLedger;
 	private runtime: TapdRuntime | null = null;
 	private server: TapdHttpServer | null = null;
 	private token = "";
@@ -89,6 +93,7 @@ export class Daemon {
 		this.options = options;
 		this.bus = new EventBus({ ringBufferSize: options.config.ringBufferSize });
 		this.notifications = new NotificationQueue();
+		this.attentionLedger = new FileAttentionLedger(options.config.dataDir);
 	}
 
 	async start(): Promise<void> {
@@ -274,6 +279,9 @@ export class Daemon {
 		router.add("POST", "/api/connect", createConnectRoute(service));
 		router.add("POST", "/api/funds-requests", createFundsRequestsRoute(service));
 
+		const postage = createPostageRoutes(service);
+		router.add("POST", "/api/postage/topup", postage.topup);
+
 		const meetings = createMeetingsRoutes(service, {
 			calendarProvider: this.options.calendarProvider ?? null,
 		});
@@ -300,7 +308,19 @@ export class Daemon {
 			this.options.createInvite ?? (() => notWired("createInvite"));
 		router.add("POST", "/api/invites", createInvitesRoute(createInvite));
 
-		const notifications = createNotificationsRoute(this.notifications);
+		const notifications = createNotificationsRoute(this.notifications, {
+			ledger: this.attentionLedger,
+			identity: () => {
+				const identity = this.options.identitySource();
+				return { chain: identity.chain, agentId: identity.agentId };
+			},
+			// Grants (weekly notification quotas) are looked up per drained
+			// peer so over-quota chatter folds before it reaches any host.
+			trustStore: this.options.trustStore,
+			onLedgerError: (error) => {
+				console.warn(`tapd: attention ledger accounting failed: ${toErrorMessage(error)}`);
+			},
+		});
 		router.add("GET", "/api/notifications/drain", notifications);
 
 		const controlOptions: DaemonControlOptions = {

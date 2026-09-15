@@ -3,7 +3,14 @@ import { join } from "node:path";
 import { Client, getInboxIdForIdentifier } from "@xmtp/node-sdk";
 import type { DecodedMessage, Dm, Signer } from "@xmtp/node-sdk";
 import { hexToBytes } from "viem";
-import { TransportError, isEthereumAddress, nowISO, toErrorMessage } from "../common/index.js";
+import {
+	AttentionPaymentRequiredError,
+	TransportError,
+	TransportRpcError,
+	isEthereumAddress,
+	nowISO,
+	toErrorMessage,
+} from "../common/index.js";
 import type { IAgentResolver } from "../identity/resolver.js";
 import {
 	CONNECTION_REQUEST,
@@ -622,11 +629,16 @@ export class XmtpTransport implements TransportProvider {
 		this.pendingRequests.delete(requestId);
 
 		if ("error" in payload && payload.error && typeof payload.error === "object") {
+			const rpcError = payload.error as { code?: unknown; message?: unknown; data?: unknown };
 			const errorMessage =
-				typeof (payload.error as { message?: unknown }).message === "string"
-					? (payload.error as { message: string }).message
+				typeof rpcError.message === "string"
+					? rpcError.message
 					: `Peer returned an error for message ${requestId}`;
-			pending.reject(new TransportError(errorMessage));
+			if (typeof rpcError.code === "number") {
+				pending.reject(new TransportRpcError(errorMessage, rpcError.code, rpcError.data));
+			} else {
+				pending.reject(new TransportError(errorMessage));
+			}
 			return true;
 		}
 
@@ -740,6 +752,18 @@ export class XmtpTransport implements TransportProvider {
 				message,
 			});
 		} catch (error) {
+			// Typed service rejections keep their code and machine-readable
+			// data on the wire; anything else collapses to the generic -32603.
+			if (error instanceof AttentionPaymentRequiredError) {
+				await this.sendJsonRpcError(
+					rawMessage.senderInboxId,
+					message.id,
+					error.rpcCode,
+					error.message,
+					{ attention: error.quote, ...(error.postage ? { postage: error.postage } : {}) },
+				);
+				return false;
+			}
 			await this.sendJsonRpcError(
 				rawMessage.senderInboxId,
 				message.id,
@@ -947,11 +971,12 @@ export class XmtpTransport implements TransportProvider {
 		id: ProtocolMessage["id"],
 		code: number,
 		message: string,
+		data?: unknown,
 	): Promise<void> {
 		await this.sendJsonRpc(senderInboxId, {
 			jsonrpc: "2.0",
 			id,
-			error: { code, message },
+			error: { code, message, ...(data !== undefined ? { data } : {}) },
 		});
 	}
 

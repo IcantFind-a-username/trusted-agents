@@ -598,11 +598,29 @@ Examples:
 		.command("send <peer> <text>")
 		.description("Send message to connected peer")
 		.option("--scope <scope>", "Semantic message scope", "general-chat")
-		.action(async (peer: string, text: string, cmdOpts: { scope?: string }) => {
-			const opts = program.opts<GlobalOptions>();
-			const { messageSendCommand } = await import("./commands/message-send.js");
-			await messageSendCommand(peer, text, opts, { scope: cmdOpts.scope });
-		});
+		.option(
+			"--priority",
+			"Pay the peer's priority attention price so the message escalates and may wake their agent",
+		)
+		.option(
+			"--dry-run",
+			"Preview the message and the peer's advertised attention cost without sending",
+		)
+		.action(
+			async (
+				peer: string,
+				text: string,
+				cmdOpts: { scope?: string; dryRun?: boolean; priority?: boolean },
+			) => {
+				const opts = program.opts<GlobalOptions>();
+				const { messageSendCommand } = await import("./commands/message-send.js");
+				await messageSendCommand(peer, text, opts, {
+					scope: cmdOpts.scope,
+					dryRun: cmdOpts.dryRun,
+					priority: cmdOpts.priority,
+				});
+			},
+		);
 
 	message
 		.command("request-funds <peer>")
@@ -782,6 +800,53 @@ Examples:
 			const opts = program.opts<GlobalOptions>();
 			const { journalShowCommand } = await import("./commands/journal-show.js");
 			await journalShowCommand(requestId, opts);
+		});
+
+	// attention
+	const attention = program
+		.command("attention")
+		.description("Inspect the notification attention ledger");
+
+	attention
+		.command("show")
+		.description("Per-peer notification attention usage (local read, no transport)")
+		.action(async () => {
+			const opts = program.opts<GlobalOptions>();
+			const { attentionShowCommand } = await import("./commands/attention-show.js");
+			await attentionShowCommand(opts);
+		});
+
+	// postage
+	const postage = program
+		.command("postage")
+		.description("Prepaid postage credits (paid attention)");
+
+	postage
+		.command("topup <peer>")
+		.description("Buy prepaid postage credit at a peer (pays USDC via the daemon)")
+		.requiredOption("--amount <amount>", "Decimal USDC amount to prepay (≤6 decimals)")
+		.option("--wait-ms <ms>", "How long to wait for the peer's credit certificate")
+		.option("--dry-run", "Preview without paying or sending")
+		.option("--yes", "Skip the confirmation prompt")
+		.action(
+			async (
+				peer: string,
+				cmdOpts: { amount: string; waitMs?: string; dryRun?: boolean; yes?: boolean },
+			) => {
+				const opts = program.opts<GlobalOptions>();
+				const { postageTopupCommand } = await import("./commands/postage-topup.js");
+				await postageTopupCommand(peer, cmdOpts, opts);
+			},
+		);
+
+	postage
+		.command("balance")
+		.description("Held and issued postage credits (local read, no transport)")
+		.option("--peer <peer>", "Only credits for this peer (name or agent id)")
+		.action(async (cmdOpts: { peer?: string }) => {
+			const opts = program.opts<GlobalOptions>();
+			const { postageBalanceCommand } = await import("./commands/postage-balance.js");
+			await postageBalanceCommand(cmdOpts, opts);
 		});
 
 	// app

@@ -30,6 +30,7 @@ async function resolveIdentity(
 			name: agent.registrationFile.name,
 			description: agent.registrationFile.description,
 			capabilities: agent.capabilities,
+			attention: agent.attention ?? null,
 			resolved_at: agent.resolvedAt,
 		},
 		opts,

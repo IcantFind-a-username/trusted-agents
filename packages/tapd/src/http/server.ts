@@ -1,7 +1,12 @@
 import { mkdir, rm } from "node:fs/promises";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { dirname, extname } from "node:path";
-import { toErrorMessage } from "trusted-agents-core";
+import {
+	ATTENTION_PAYMENT_REQUIRED_CODE,
+	AttentionPaymentRequiredError,
+	TransportRpcError,
+	toErrorMessage,
+} from "trusted-agents-core";
 import { authorizeRequest } from "./auth.js";
 import { HttpError } from "./errors.js";
 import { sendError, sendJson, sendNotFound, sendUnauthorized } from "./response.js";
@@ -116,6 +121,29 @@ export class TapdHttpServer {
 			// bugs, not user input, and clients shouldn't auto-retry them.
 			if (error instanceof HttpError) {
 				sendError(res, error.status, error.code, error.message);
+				return;
+			}
+			// Attention rejections carry a machine-readable quote; surface it
+			// as a structured 402 whether the rejection happened in-process
+			// (this daemon enforcing) or came back from a remote peer over the
+			// transport as JSON-RPC -32050.
+			if (error instanceof AttentionPaymentRequiredError) {
+				sendError(res, 402, "attention_payment_required", error.message, {
+					attention: error.quote,
+					...(error.postage ? { postage: error.postage } : {}),
+				});
+				return;
+			}
+			if (error instanceof TransportRpcError && error.rpcCode === ATTENTION_PAYMENT_REQUIRED_CODE) {
+				sendError(
+					res,
+					402,
+					"attention_payment_required",
+					error.message,
+					typeof error.rpcData === "object" && error.rpcData !== null
+						? (error.rpcData as Record<string, unknown>)
+						: undefined,
+				);
 				return;
 			}
 			sendError(res, 500, "internal_error", toErrorMessage(error));

@@ -15,6 +15,14 @@ export {
 	type TapNotificationType,
 } from "./notification-queue.js";
 export {
+	formatNotificationLines,
+	MAX_RENDERED_NOTIFICATIONS,
+	notificationEventCount,
+	planNotificationRender,
+	type NotificationRenderPlan,
+	type RenderedNotificationLine,
+} from "./notification-format.js";
+export {
 	generateAuthToken,
 	persistAuthToken,
 	loadAuthToken,

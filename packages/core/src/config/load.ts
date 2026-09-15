@@ -29,6 +29,10 @@ interface StoredYamlConfig {
 		provider?: IpfsUploadProvider;
 		tack_api_url?: string;
 	};
+	attention?: {
+		enforce?: boolean;
+		pricing?: Record<string, string>;
+	};
 	chains?: Record<
 		string,
 		{
@@ -147,6 +151,14 @@ export async function loadTrustedAgentConfigFromDataDir(
 			mode: executionMode,
 			...(paymasterProvider ? { paymasterProvider } : {}),
 		},
+		...(yaml?.attention
+			? {
+					attention: {
+						...(yaml.attention.enforce !== undefined ? { enforce: yaml.attention.enforce } : {}),
+						...(yaml.attention.pricing ? { pricing: yaml.attention.pricing } : {}),
+					},
+				}
+			: {}),
 	};
 }
 
